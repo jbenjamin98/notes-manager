@@ -1,0 +1,32 @@
+appId: com.notesmanager.app
+productName: notes-manager
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!vitest.config.*'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,CHANGELOG.md,README.md,SPEC.md,CLAUD.md,GEMINI.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+win:
+  target:
+    - target: nsis
+      arch: x64
+  executableName: notes-manager
+  # Never request elevation: no UAC prompt, no admin needed to install or run.
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: true
+  perMachine: false            # per-user install into %LOCALAPPDATA%\Programs
+  allowElevation: false
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+npmRebuild: false
+electronDist: node_modules/electron/dist
