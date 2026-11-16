@@ -16,6 +16,9 @@ export interface ParsedTask {
   /** An `| @owner` / `| due:` field was typed (so nothing is inferred for it). */
   ownerExplicit: boolean
   dueExplicit: boolean
+  /** Where it came from: an insight id and its readable label, from "[Chat · Priya](nm://src/<id>)". */
+  sourceId: string | null
+  sourceLabel: string | null
 }
 
 export interface Chunk {
@@ -35,7 +38,6 @@ export interface ParsedNote {
   title: string | null
   tasks: ParsedTask[]
   chunks: Chunk[]
-  llmBlocked: boolean
 }
 
 /** Lines with their original EOLs kept, so edits never change line endings. */
@@ -86,6 +88,9 @@ function normPriority(v: string): Priority | null {
         : null
 }
 
+/** A link back to the insight a task came from: "[Chat · Priya · Nov 14](nm://src/<id>)". */
+export const SOURCE_RE = /\s*\[([^\]]+)\]\(nm:\/\/src\/([0-9a-fA-F-]{8,40})\)/
+
 export function parseTaskLine(line: string, index: number): ParsedTask | null {
   const m = TASK_RE.exec(stripEol(line))
   if (!m) return null
@@ -96,7 +101,9 @@ export function parseTaskLine(line: string, index: number): ParsedTask | null {
     id = idm[1]
     rest = (' ' + rest).replace(ID_RE, '').trim()
   }
-  const [desc, ...fields] = rest.split(/\s+\|\s+/)
+  const [rawDesc, ...fields] = rest.split(/\s+\|\s+/)
+  const src = SOURCE_RE.exec(rawDesc)
+  const desc = src ? rawDesc.replace(SOURCE_RE, '') : rawDesc
   const t: ParsedTask = {
     id,
     line: index,
@@ -107,7 +114,9 @@ export function parseTaskLine(line: string, index: number): ParsedTask | null {
     priority: null,
     estMinutes: null,
     ownerExplicit: false,
-    dueExplicit: false
+    dueExplicit: false,
+    sourceId: src ? src[2] : null,
+    sourceLabel: src ? src[1] : null
   }
   for (const f of fields) {
     const s = f.trim()
@@ -153,12 +162,5 @@ export function parseNote(content: string): ParsedNote {
   flush()
 
   const body = lines.slice(start).join('')
-  const d = fm?.data ?? {}
-  const tags = Array.isArray(d.tags) ? d.tags.map(String) : []
-  const llmBlocked =
-    /^cui/i.test(String(d.classification ?? '')) ||
-    String(d.llm ?? '').toLowerCase() === 'off' ||
-    tags.some((t) => /^#?cui$/i.test(t)) ||
-    /(^|\s)#cui\b/i.test(body)
-  return { frontmatter: fm, body, title, tasks, chunks, llmBlocked }
+  return { frontmatter: fm, body, title, tasks, chunks }
 }

@@ -41,13 +41,32 @@ const AUTOMATED_LOCAL =
 const BULK_SUBDOMAIN =
   /^(mail|email|e|em|news|newsletter|updates|marketing|campaign|bounce|mg|send|msg)\./i
 
+/** Service mailboxes that send on a person's behalf (comments, invites, shares): never a person. */
+const SERVICE_LOCAL =
+  /(^|[-_.])(calendar|calendar-notification|drive-shares|comments|docs|meet|forms|chat)([-_.+].*)?$/i
+const SERVICE_DOMAIN =
+  /(^|\.)(atlassian\.net|slack\.com|zoom\.us|github\.com|asana\.com|trello\.com|notion\.so|figma\.com|calendly\.com|docusign\.net|servicenow\.com|service-now\.com|smartsheet\.com|monday\.com|clickup\.com|linear\.app|zendesk\.com|hubspot\.com|myworkday\.com)$/i
+/** Display names of apps and bots ("Google Calendar", "Jira", "Name (via Google Docs)"). */
+const SERVICE_NAME =
+  /^(google( calendar| drive| docs| sheets| slides| meet| chat| forms| workspace)?|calendar|jira|confluence|slack|zoom|microsoft teams|github|gitlab|asana|trello|notion|figma|miro|calendly|docusign|servicenow|smartsheet|workday)\s*$|\((via )?google (docs|sheets|slides|drive)\)|\b(no-?reply|do not reply|notifications?|bot|mailer)\b/i
+
 export function isAutomatedSender(email: string | null, name: string | null): boolean {
+  if (name && SERVICE_NAME.test(name.trim())) return true
   if (!email) return false
   const [local, domain = ''] = email.toLowerCase().split('@')
   if (AUTOMATED_LOCAL.test(local)) return true
   if (BULK_SUBDOMAIN.test(domain)) return true
-  return /\b(no-?reply|do not reply|notifications?)\b/i.test(name ?? '')
+  if (SERVICE_DOMAIN.test(domain)) return true
+  // calendar-notification@google.com, drive-shares-dm-noreply@google.com, comments-noreply@docs.google.com
+  return (domain === 'google.com' || domain.endsWith('.google.com')) && SERVICE_LOCAL.test(local)
 }
+
+/** A person you could owe a reply to (not an app, a bot or a calendar invitation). */
+export const isPersonThread = (t: {
+  senderEmail: string | null
+  senderName: string | null
+  subject: string
+}): boolean => !isAutomatedSender(t.senderEmail, t.senderName) && !isCalendarNoise(t.subject)
 
 export function isMuted(email: string | null, ctx: RelevanceCtx): boolean {
   if (!email) return false

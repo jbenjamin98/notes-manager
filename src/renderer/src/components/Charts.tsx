@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import {
   forceCenter,
   forceCollide,
@@ -34,7 +34,7 @@ function ViewToggle({
   )
 }
 
-const th = 'px-2 py-1 text-left text-[11px] font-semibold tracking-wide text-muted uppercase'
+const th = 'px-2 py-1 text-left text-xs font-semibold tracking-wide text-muted uppercase'
 const td = 'px-2 py-1 text-sm'
 
 // -------------------------------------------------------------- activity columns
@@ -245,42 +245,64 @@ function hash(s: string): number {
 
 const CAT: Record<string, { label: string; color: string }> = {
   person: { label: 'People', color: 'var(--s1)' },
-  customer: { label: 'Accounts', color: 'var(--s2)' },
+  customer: { label: 'Companies', color: 'var(--s2)' },
   system: { label: 'Systems', color: 'var(--s3)' },
+  project: { label: 'Projects', color: 'var(--accent)' },
+  place: { label: 'Places', color: 'var(--warn)' },
   topic: { label: 'Topics', color: 'var(--muted)' },
   event: { label: 'Events', color: 'var(--muted)' }
 }
 
-/** Hue alone isn't enough (3-hue all-pairs cap, CVD, contrast WARN on light): shape encodes category too. */
+/** Star colours for the night sky (bright on the dark panel in both themes). */
+const STAR: Record<string, string> = {
+  person: '#6db4ff',
+  customer: '#ff9a6b',
+  system: '#52e3ab',
+  project: '#b9b5ff',
+  place: '#ffd35e',
+  topic: '#b4bcdf',
+  event: '#b4bcdf'
+}
+
+/** Spikes per category: hue alone isn't enough (CVD), so the star's shape carries the category too. */
+const SPIKES: Record<string, number> = {
+  person: 4,
+  customer: 5,
+  project: 6,
+  system: 8,
+  place: 3,
+  topic: 0,
+  event: 0
+}
+
+/** A sharp n-pointed star with its points straight up (topics and events are plain soft dots). */
+function starPoints(n: number, outer: number, inner: number): string {
+  return Array.from({ length: n * 2 }, (_, i) => {
+    const a = (Math.PI * i) / n - Math.PI / 2
+    const r = i % 2 === 0 ? outer : inner
+    return `${(Math.cos(a) * r).toFixed(2)},${(Math.sin(a) * r).toFixed(2)}`
+  }).join(' ')
+}
+
 function Shape({
   cat,
   r,
   ...rest
 }: { cat: EntityCategory; r: number } & React.SVGProps<SVGElement>): React.JSX.Element {
-  const common = { fill: CAT[cat].color, stroke: 'var(--app)', strokeWidth: 2 }
   const p = rest as Record<string, unknown>
-  switch (cat) {
-    case 'customer':
-      return <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={r * 0.3} {...common} {...p} />
-    case 'system':
-      return (
-        <polygon
-          points={`0,${-r * 1.25} ${r * 1.25},0 0,${r * 1.25} ${-r * 1.25},0`}
-          {...common}
-          {...p}
-        />
-      )
-    case 'topic':
-      return (
-        <polygon
-          points={`0,${-r * 1.15} ${r * 1.1},${r * 0.85} ${-r * 1.1},${r * 0.85}`}
-          {...common}
-          {...p}
-        />
-      )
-    default:
-      return <circle r={r} {...common} {...p} />
-  }
+  const n = SPIKES[cat] ?? 0
+  const fill = STAR[cat] ?? STAR.topic
+  if (n === 0) return <circle r={r * 0.8} fill={fill} {...p} />
+  // More spikes means a rounder star; few spikes make a long, sharp sparkle.
+  const inner = n <= 4 ? 0.34 : n <= 6 ? 0.46 : 0.58
+  return (
+    <polygon
+      points={starPoints(n, r * 1.55, r * 1.55 * inner)}
+      fill={fill}
+      strokeLinejoin="round"
+      {...p}
+    />
+  )
 }
 
 interface LayoutNode {
@@ -364,6 +386,23 @@ export function Network({
     return out
   }, [nodes, edges])
 
+  const uid = useId().replace(/:/g, '')
+  // A fixed scatter of faint background stars (same every render).
+  const dust = useMemo(
+    () =>
+      Array.from({ length: 70 }, (_, i) => {
+        const h = hash(`dust${i}`)
+        return {
+          x: h % W,
+          y: (h >>> 9) % H,
+          r: 0.5 + ((h >>> 5) % 10) / 10,
+          o: 0.25 + ((h >>> 3) % 50) / 100,
+          delay: (h % 60) / 10,
+          dur: 2.5 + ((h >>> 7) % 40) / 10
+        }
+      }),
+    []
+  )
   const byId = useMemo(() => new Map(layout.map((n) => [n.id, n])), [layout])
   const neighbors = useMemo(() => {
     const m = new Map<string, Set<string>>()
@@ -374,9 +413,9 @@ export function Network({
     return m
   }, [edges])
   // Fixed legend order (colour slots are assigned per category, never by rank or appearance).
-  const present = (['person', 'customer', 'system', 'topic', 'event'] as const).filter((c) =>
-    nodes.some((n) => n.category === c)
-  )
+  const present = (
+    ['person', 'customer', 'project', 'system', 'place', 'topic', 'event'] as const
+  ).filter((c) => nodes.some((n) => n.category === c))
   const labelTop = new Set(
     [...layout]
       .sort((a, b) => b.notes - a.notes)
@@ -391,8 +430,9 @@ export function Network({
       <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
         {present.map((c) => (
           <span key={c} className="flex items-center gap-1.5 text-xs text-muted">
-            <svg width="14" height="14" viewBox="-9 -9 18 18" aria-hidden>
-              <Shape cat={c} r={6} />
+            <svg width="20" height="20" viewBox="-11 -11 22 22" aria-hidden>
+              <circle r="10.5" fill="#0a0e2c" />
+              <Shape cat={c} r={5} />
             </svg>
             {CAT[c].label}
           </span>
@@ -442,9 +482,64 @@ export function Network({
             viewBox={`0 0 ${W} ${H}`}
             role="group"
             aria-label="Relationship graph: items that appear in the same notes are connected"
-            className="w-full"
+            className="w-full rounded-2xl"
             onMouseLeave={() => setHover(null)}
           >
+            <defs>
+              <linearGradient id={`${uid}-sky`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="#0a0e2c" />
+                <stop offset="1" stopColor="#171446" />
+              </linearGradient>
+              <radialGradient id={`${uid}-neb1`}>
+                <stop offset="0" stopColor="#6a4fe0" stopOpacity="0.32" />
+                <stop offset="1" stopColor="#6a4fe0" stopOpacity="0" />
+              </radialGradient>
+              <radialGradient id={`${uid}-neb2`}>
+                <stop offset="0" stopColor="#1f9bd6" stopOpacity="0.24" />
+                <stop offset="1" stopColor="#1f9bd6" stopOpacity="0" />
+              </radialGradient>
+              {Object.entries(STAR).map(([c, col]) => (
+                <radialGradient key={c} id={`${uid}-halo-${c}`}>
+                  <stop offset="0" stopColor={col} stopOpacity="0.7" />
+                  <stop offset="0.35" stopColor={col} stopOpacity="0.22" />
+                  <stop offset="1" stopColor={col} stopOpacity="0" />
+                </radialGradient>
+              ))}
+              {edges.map((e) => {
+                const a = byId.get(e.a)
+                const b = byId.get(e.b)
+                if (!a || !b) return null
+                return (
+                  <linearGradient
+                    key={`${e.a}|${e.b}`}
+                    id={`${uid}-e-${e.a}-${e.b}`}
+                    gradientUnits="userSpaceOnUse"
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                  >
+                    <stop offset="0" stopColor={STAR[a.category] ?? STAR.topic} />
+                    <stop offset="1" stopColor={STAR[b.category] ?? STAR.topic} />
+                  </linearGradient>
+                )
+              })}
+            </defs>
+            <rect width={W} height={H} fill={`url(#${uid}-sky)`} />
+            <ellipse cx={W * 0.25} cy={H * 0.3} rx={300} ry={190} fill={`url(#${uid}-neb1)`} />
+            <ellipse cx={W * 0.78} cy={H * 0.72} rx={320} ry={200} fill={`url(#${uid}-neb2)`} />
+            {dust.map((d, i) => (
+              <circle
+                key={i}
+                cx={d.x}
+                cy={d.y}
+                r={d.r}
+                fill="#dfe6ff"
+                className="nm-twinkle"
+                style={{ animationDelay: `${d.delay}s`, animationDuration: `${d.dur}s` }}
+                opacity={d.o}
+              />
+            ))}
             {edges.map((e) => {
               const a = byId.get(e.a)
               const b = byId.get(e.b)
@@ -457,9 +552,10 @@ export function Network({
                   y1={a.y}
                   x2={b.x}
                   y2={b.y}
-                  stroke="var(--muted)"
-                  strokeWidth={1 + Math.min(e.weight, 4) * 0.6}
-                  opacity={on ? (hover ? 0.7 : 0.35) : 0.07}
+                  stroke={`url(#${uid}-e-${e.a}-${e.b})`}
+                  strokeLinecap="round"
+                  strokeWidth={(hover && on ? 1.6 : 0.8) + Math.min(e.weight, 4) * 0.3}
+                  opacity={on ? (hover ? 0.95 : 0.4) : 0.06}
                 />
               )
             })}
@@ -478,7 +574,17 @@ export function Network({
                 onClick={() => onOpen(n.id)}
                 onKeyDown={(e) => e.key === 'Enter' && onOpen(n.id)}
               >
-                <Shape cat={n.category} r={n.r} />
+                <circle
+                  r={n.r * (hover === n.id ? 4.4 : 3.3)}
+                  fill={`url(#${uid}-halo-${n.category})`}
+                  className="nm-twinkle"
+                  style={{
+                    animationDelay: `${(hash(n.id) % 50) / 10}s`,
+                    animationDuration: `${3 + (hash(n.id) % 30) / 10}s`
+                  }}
+                />
+                <Shape cat={n.category} r={n.r} stroke="#0a0e2c" strokeWidth={0.8} />
+                <circle r={Math.max(1.6, n.r * 0.22)} fill="#fff" opacity={0.92} />
                 {(labelTop.has(n.id) ||
                   hover === n.id ||
                   (hover && neighbors.get(hover)?.has(n.id))) && (
@@ -487,8 +593,8 @@ export function Network({
                     textAnchor="middle"
                     fontSize={12}
                     fontWeight={hover === n.id ? 650 : 500}
-                    fill="var(--fg)"
-                    stroke="var(--sticky)"
+                    fill="#eef0ff"
+                    stroke="#0a0e2c"
                     strokeWidth={3.5}
                     paintOrder="stroke"
                     style={{ pointerEvents: 'none' }}

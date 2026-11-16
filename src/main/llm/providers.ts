@@ -25,6 +25,7 @@ export interface ProviderResult {
   tokensIn: number | null
   tokensOut: number | null
   limits?: RateLimits | null
+  model?: string
 }
 
 export interface ProviderMeta {
@@ -50,7 +51,7 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     kind: 'gemini',
     paid: false,
     base: 'https://generativelanguage.googleapis.com/v1beta',
-    models: { extract: 'gemini-2.5-flash-lite', chat: 'gemini-2.5-flash' },
+    models: { extract: 'gemini-flash-lite-latest', chat: 'gemini-flash-latest' },
     rpm: 10,
     keyUrl: 'https://aistudio.google.com/apikey',
     blurb: 'Free tier, no billing needed.'
@@ -178,10 +179,85 @@ type Call = (
   key: string,
   model: string,
   messages: ChatMsg[],
-  signal: AbortSignal
+  signal: AbortSignal,
+  maxOut?: number
 ) => Promise<ProviderResult>
 
-export const callGemini: Call = async (f, base, key, model, messages, signal) => {
+const resolvedGeminiModel = new Map<string, string>()
+
+export function clearGeminiModelCache(): void {
+  resolvedGeminiModel.clear()
+}
+
+const GEMINI_SKIP =
+  /image|imagen|veo|tts|audio|live|robotics|computer-use|research|thinking|embedding|aqa|learnlm|gemma|customtools|-exp|-\d{2}-\d{4}$|-\d{4}-\d{2}-\d{2}$/i
+
+function rankGeminiFallback(id: string, wantLite: boolean): number {
+  const ver = Number(id.match(/^gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0)
+  const gen = ver >= 3 ? 1000 + ver * 50 : id.endsWith('-latest') ? 900 : ver >= 2.5 ? 500 : 100
+  const isLite = /lite/i.test(id)
+  const isFlash = /flash/i.test(id)
+  const tier = (wantLite === isLite ? 40 : 0) + (isFlash ? 20 : 0)
+  const stable = /preview/i.test(id) ? 0 : 5
+  return gen + tier + stable
+}
+
+async function discoverGeminiFallbacks(
+  f: typeof fetch,
+  base: string,
+  key: string,
+  failedModel: string,
+  signal: AbortSignal
+): Promise<string[]> {
+  const wantLite = /lite/i.test(failedModel)
+  const defaults = wantLite
+    ? [
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-3-flash-preview',
+        'gemini-flash-lite-latest',
+        'gemini-flash-latest',
+        'gemini-2.5-flash'
+      ]
+    : [
+        'gemini-3-flash-preview',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+        'gemini-3.1-flash-lite',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-flash-lite-latest',
+        'gemini-2.5-flash'
+      ]
+  try {
+    const res = await f(`${base}/models?pageSize=200`, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': key },
+      signal
+    })
+    if (!res.ok) return defaults.filter((m) => m !== failedModel)
+    const j = (await res.json()) as {
+      models?: { name?: string; supportedGenerationMethods?: string[] }[]
+    }
+    const listed = (j.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m) => (m.name ?? '').replace(/^models\//i, ''))
+      .filter((id) => id.startsWith('gemini-') && id !== failedModel && !GEMINI_SKIP.test(id))
+    if (listed.length === 0) return defaults.filter((m) => m !== failedModel)
+    const inList = new Set(listed)
+    const all = [...new Set([...listed, ...defaults.filter((m) => m !== failedModel)])]
+    return all.sort(
+      (a, b) =>
+        (inList.has(b) ? 10_000 : 0) +
+        rankGeminiFallback(b, wantLite) -
+        ((inList.has(a) ? 10_000 : 0) + rankGeminiFallback(a, wantLite))
+    )
+  } catch {
+    return defaults.filter((m) => m !== failedModel)
+  }
+}
+
+export const callGemini: Call = async (f, base, key, model, messages, signal, maxOut) => {
   const system = messages
     .filter((m) => m.role === 'system')
     .map((m) => m.content)
@@ -194,30 +270,59 @@ export const callGemini: Call = async (f, base, key, model, messages, signal) =>
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }]
       })),
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.2,
+      ...(maxOut ? { maxOutputTokens: maxOut } : {})
+    }
   }
-  const res = await f(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(body),
-    signal
-  })
+  const clean = model.replace(/^models\//i, '')
+  const cacheKey = `${base}|${clean}`
+  let active = resolvedGeminiModel.get(cacheKey) ?? clean
+  const payload = JSON.stringify(body)
+  const post = (m: string): Promise<Response> =>
+    f(`${base}/models/${encodeURIComponent(m)}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: payload,
+      signal
+    })
+
+  let res = await post(active)
+  if (res.status === 404) {
+    resolvedGeminiModel.delete(cacheKey)
+    const candidates = await discoverGeminiFallbacks(f, base, key, active, signal)
+    for (const cand of candidates.slice(0, 5)) {
+      const r = await post(cand)
+      if (r.status !== 404) {
+        res = r
+        active = cand
+        if (r.ok) resolvedGeminiModel.set(cacheKey, cand)
+        break
+      }
+    }
+  }
   if (!res.ok) return failure(res)
   const j = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[]
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[]
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   }
-  const text = j.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+  const text =
+    j.candidates?.[0]?.content?.parts
+      ?.filter((p) => !p.thought)
+      .map((p) => p.text ?? '')
+      .join('') ?? ''
   if (!text) throw new LlmHttpError(502, 'Gemini returned no text (it may have been blocked)')
   return {
     text,
     tokensIn: j.usageMetadata?.promptTokenCount ?? null,
-    tokensOut: j.usageMetadata?.candidatesTokenCount ?? null
+    tokensOut: j.usageMetadata?.candidatesTokenCount ?? null,
+    model: active
   }
 }
 
 /** OpenAI, Groq and OpenRouter all speak the same chat-completions dialect. */
-export const callOpenAiCompatible: Call = async (f, base, key, model, messages, signal) => {
+export const callOpenAiCompatible: Call = async (f, base, key, model, messages, signal, maxOut) => {
   const res = await f(`${base}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
@@ -225,6 +330,7 @@ export const callOpenAiCompatible: Call = async (f, base, key, model, messages, 
       model,
       messages,
       temperature: 0.2,
+      ...(maxOut ? { max_tokens: maxOut } : {}),
       response_format: { type: 'json_object' }
     }),
     signal
@@ -244,7 +350,7 @@ export const callOpenAiCompatible: Call = async (f, base, key, model, messages, 
   }
 }
 
-export const callAnthropic: Call = async (f, base, key, model, messages, signal) => {
+export const callAnthropic: Call = async (f, base, key, model, messages, signal, maxOut) => {
   const system = messages
     .filter((m) => m.role === 'system')
     .map((m) => m.content)
@@ -258,7 +364,7 @@ export const callAnthropic: Call = async (f, base, key, model, messages, signal)
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4096,
+      max_tokens: maxOut ?? 4096,
       temperature: 0.2,
       ...(system ? { system } : {}),
       messages: messages.filter((m) => m.role !== 'system')

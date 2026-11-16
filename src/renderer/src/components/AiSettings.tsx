@@ -3,6 +3,7 @@ import type { LlmStatus } from '@shared/contract'
 import { relativeTime } from '../format'
 import { KEY_GUIDES } from '../keyGuide'
 import { KeySteps } from './SetupGuide'
+import AiModeSwitch from './AiModeSwitch'
 
 type P = LlmStatus['providers'][number]
 
@@ -161,7 +162,7 @@ function ProviderCard({
           />
           <span className="truncate">{p.label}</span>
           {p.paid && (
-            <span className="rounded-full border border-line px-1.5 text-[10px] font-normal text-muted">
+            <span className="rounded-full border border-line px-1.5 text-xs font-normal text-muted">
               paid
             </span>
           )}
@@ -239,14 +240,25 @@ function ProviderCard({
   )
 }
 
+const USAGE_LABEL = (f: string): string =>
+  f === 'ask'
+    ? 'Questions'
+    : f === 'capture'
+      ? 'Brain-dumps'
+      : f === 'names'
+        ? 'Name cleanup'
+        : f.startsWith('action:')
+          ? f.slice(7).replace(/-/g, ' ')
+          : 'Other'
+
 export default function AiSettings(): React.JSX.Element {
   const [status, setStatus] = useState<LlmStatus | null>(null)
   const [llm, setLlm] = useState<{
     enabled: boolean
-    blockCui: boolean
     models: Record<string, Record<string, string>>
     disabled: string[]
     order: string[]
+    dailyTokenBudget?: number
   } | null>(null)
 
   const load = useCallback(() => {
@@ -259,6 +271,14 @@ export default function AiSettings(): React.JSX.Element {
     const t = setInterval(load, 15_000)
     return () => clearInterval(t)
   }, [load])
+
+  const setBudget = async (n: number): Promise<void> => {
+    if (!llm) return
+    const next = { ...llm, dailyTokenBudget: Math.max(0, n) }
+    setLlm(next)
+    await window.api.invoke('settings:update', { llm: next as never })
+    load()
+  }
 
   const toggle = async (enabled: boolean): Promise<void> => {
     if (!llm) return
@@ -286,6 +306,39 @@ export default function AiSettings(): React.JSX.Element {
       </p>
       {status && llm?.enabled !== false && (
         <>
+          <h3 className="mt-4 mb-2 text-xs font-semibold tracking-wide text-muted uppercase">
+            How Much AI to Use
+          </h3>
+          <AiModeSwitch variant="cards" />
+          <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            Daily budget
+            <input
+              type="number"
+              min={0}
+              step={10000}
+              value={llm?.dailyTokenBudget ?? 60000}
+              onChange={(e) => void setBudget(Number(e.target.value) || 0)}
+              aria-label="Daily token budget"
+              className="w-28 rounded-lg border border-line bg-field px-2 py-1 text-sm"
+            />
+            tokens
+            <span className="text-xs text-muted">
+              (0 = no limit). {status.budget.used.toLocaleString()} used today. When it is reached,
+              the Co-Pilot works on your computer until tomorrow.
+            </span>
+          </label>
+          {status.usage.length > 0 && (
+            <div className="mt-2 text-xs text-muted" data-testid="ai-usage">
+              Today:{' '}
+              {status.usage
+                .map((u) => `${USAGE_LABEL(u.feature)} ${u.tokens.toLocaleString()}`)
+                .join(' · ')}
+            </div>
+          )}
+          <p className="mt-2 text-xs text-muted">
+            Token counts are rough guides. Each provider card below shows what this app actually
+            used today. You can also switch from the Co-Pilot panel at any time.
+          </p>
           {!status.canStoreKeys && (
             <p className="mt-2 text-xs text-danger">
               This computer cannot encrypt secrets, so keys cannot be saved.
@@ -322,8 +375,10 @@ export default function AiSettings(): React.JSX.Element {
             Only what you type to the Co-Pilot, plus short snippets of your own notes when you ask a
             question, sent to the provider that answers.
           </li>
-          <li>Anything mentioning CUI, and any note tagged CUI, is never sent.</li>
-          <li>Email addresses and phone numbers are removed first. Your email is never sent.</li>
+          <li>
+            There are no content filters: what you ask about, and the notes it matches, are sent as
+            they are.
+          </li>
           <li>Free tiers may use submitted text to improve the provider’s products.</li>
         </ul>
       </div>

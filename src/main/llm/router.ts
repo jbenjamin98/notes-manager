@@ -3,6 +3,7 @@ import type { z } from 'zod'
 import type { Db } from '../db'
 import {
   CALLERS,
+  clearGeminiModelCache,
   DEFAULT_BASE,
   DEFAULT_MODELS,
   LlmHttpError,
@@ -30,6 +31,8 @@ export interface RouterDeps {
   db: Db
   getConfig: () => LlmConfig
   getKey: (p: ProviderId) => string | null
+  /** Tokens per day this app may spend (0 or missing = unlimited). Counts what providers reported. */
+  dailyBudget?: () => number
   fetchImpl?: typeof fetch
   now?: () => number
   timeoutMs?: number
@@ -38,7 +41,7 @@ export interface RouterDeps {
 /** Why a call could not be made at all (the caller falls back to local behaviour). */
 export class LlmUnavailable extends Error {
   constructor(
-    public reason: 'disabled' | 'no-key' | 'busy' | 'failed',
+    public reason: 'disabled' | 'no-key' | 'busy' | 'failed' | 'budget',
     message: string
   ) {
     super(message)
@@ -85,6 +88,14 @@ export interface JsonRequest<T> {
   cacheKey?: string
   /** Use only this provider (for the Settings "Test" button). */
   only?: ProviderId
+  /** How long a cached answer stays valid (default 1 hour). */
+  cacheTtlMs?: number
+  /** Longest answer to allow (output tokens). */
+  maxOut?: number
+  /** What this call is for ("ask", "capture", "action:summarize-note"...), for the spend meter. */
+  feature?: string
+  /** One repair attempt for invalid JSON (default on; Light mode turns it off to save tokens). */
+  repair?: boolean
 }
 
 export interface JsonResult<T> {
@@ -134,6 +145,7 @@ export class LlmRouter {
   /** Forget cooldowns for a provider (its key just changed). */
   resetHealth(p: ProviderId): void {
     this.health.delete(p)
+    if (p === 'gemini') clearGeminiModelCache()
   }
 
   private usage(p: ProviderId): RouterStatus['providers'][number]['usage'] {
@@ -157,6 +169,29 @@ export class LlmRouter {
     } catch {
       return null
     }
+  }
+
+  /** Tokens spent today, by what they were spent on. */
+  usageByFeature(): { feature: string; tokens: number }[] {
+    const midnight = new Date(this.now())
+    midnight.setHours(0, 0, 0, 0)
+    return this.deps.db
+      .prepare(
+        "SELECT coalesce(feature, 'other') AS feature, sum(coalesce(tokens_in,0) + coalesce(tokens_out,0)) AS tokens FROM llm_usage WHERE ts >= ? GROUP BY 1 HAVING tokens > 0 ORDER BY tokens DESC"
+      )
+      .all(midnight.getTime()) as { feature: string; tokens: number }[]
+  }
+
+  /** Tokens spent today across providers (as reported by them), and the daily budget. */
+  budget(): { used: number; limit: number } {
+    const midnight = new Date(this.now())
+    midnight.setHours(0, 0, 0, 0)
+    const r = this.deps.db
+      .prepare(
+        'SELECT coalesce(sum(coalesce(tokens_in,0) + coalesce(tokens_out,0)), 0) AS tok FROM llm_usage WHERE ts >= ?'
+      )
+      .get(midnight.getTime()) as { tok: number }
+    return { used: r.tok, limit: this.deps.dailyBudget?.() ?? 0 }
   }
 
   status(): RouterStatus {
@@ -199,13 +234,14 @@ export class LlmRouter {
     model: string,
     ok: boolean,
     tin: number | null,
-    tout: number | null
+    tout: number | null,
+    feature: string | null
   ): void {
     this.deps.db
       .prepare(
-        'INSERT INTO llm_usage (provider, model, ts, ok, tokens_in, tokens_out) VALUES (?,?,?,?,?,?)'
+        'INSERT INTO llm_usage (provider, model, ts, ok, tokens_in, tokens_out, feature) VALUES (?,?,?,?,?,?,?)'
       )
-      .run(p, model, this.now(), ok ? 1 : 0, tin, tout)
+      .run(p, model, this.now(), ok ? 1 : 0, tin, tout, feature)
     this.deps.db.exec("DELETE FROM llm_usage WHERE ts < strftime('%s','now','-3 days') * 1000")
   }
 
@@ -213,16 +249,27 @@ export class LlmRouter {
     p: ProviderId,
     model: string,
     key: string,
-    messages: ChatMsg[]
-  ): Promise<string> {
+    messages: ChatMsg[],
+    maxOut?: number,
+    feature: string | null = null
+  ): Promise<{ text: string; model: string }> {
     const cfg = this.deps.getConfig()
     const f = this.deps.fetchImpl ?? fetch
     const base = cfg.baseUrls?.[p] ?? DEFAULT_BASE[p]
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), this.deps.timeoutMs ?? 30_000)
     try {
-      const res = await CALLERS[PROVIDERS[p].kind](f, base, key, model, messages, ctrl.signal)
-      this.log(p, model, true, res.tokensIn, res.tokensOut)
+      const res = await CALLERS[PROVIDERS[p].kind](
+        f,
+        base,
+        key,
+        model,
+        messages,
+        ctrl.signal,
+        maxOut
+      )
+      const usedModel = res.model ?? model
+      this.log(p, usedModel, true, res.tokensIn, res.tokensOut, feature)
       if (res.limits) {
         this.deps.db
           .prepare(
@@ -230,9 +277,9 @@ export class LlmRouter {
           )
           .run('llm.limits.' + p, JSON.stringify({ ...res.limits, seenAt: this.now() }))
       }
-      return res.text
+      return { text: res.text, model: usedModel }
     } catch (err) {
-      this.log(p, model, false, null, null)
+      this.log(p, model, false, null, null, feature)
       throw err
     } finally {
       clearTimeout(timer)
@@ -259,13 +306,20 @@ export class LlmRouter {
       const hit = this.deps.db
         .prepare('SELECT response_json AS r, created_at AS at FROM llm_cache WHERE key = ?')
         .get(cacheId) as { r: string; at: string } | undefined
-      if (hit && now - new Date(hit.at + 'Z').getTime() < CACHE_TTL_MS) {
+      if (hit && now - new Date(hit.at + 'Z').getTime() < (req.cacheTtlMs ?? CACHE_TTL_MS)) {
         const parsed = req.schema.safeParse(JSON.parse(hit.r))
         if (parsed.success)
           return { data: parsed.data, provider: cfg.order[0], model: 'cache', cached: true }
       }
     }
 
+    // Cached answers (above) are free. Anything that would call a provider respects the daily budget.
+    const b = this.budget()
+    if (b.limit > 0 && b.used >= b.limit && !req.only)
+      throw new LlmUnavailable(
+        'budget',
+        `Today's AI budget (${b.limit.toLocaleString()} tokens) is used up, so this was done on your computer. Raise it in Settings → AI Co-Pilot.`
+      )
     const keyed = cfg.order.filter(
       (p) => !!this.deps.getKey(p) && (req.only ? req.only === p : !cfg.disabled?.includes(p))
     )
@@ -295,7 +349,8 @@ export class LlmRouter {
         { role: 'user', content: req.user }
       ]
       try {
-        let text = await this.callOnce(p, model, key, messages)
+        const first = await this.callOnce(p, model, key, messages, req.maxOut, req.feature ?? null)
+        let text = first.text
         let data: T | undefined
         for (let attempt = 0; attempt < 2 && data === undefined; attempt++) {
           let problem: string | null = null
@@ -309,15 +364,24 @@ export class LlmRouter {
           } catch {
             problem = 'the output was not valid JSON'
           }
-          if (data === undefined && attempt === 0) {
-            text = await this.callOnce(p, model, key, [
-              ...messages,
-              { role: 'assistant', content: text },
-              {
-                role: 'user',
-                content: `That was invalid (${problem}). Reply with ONLY corrected JSON that matches the required shape.`
-              }
-            ])
+          if (data === undefined && attempt === 0 && req.repair !== false) {
+            text = (
+              await this.callOnce(
+                p,
+                first.model,
+                key,
+                [
+                  ...messages,
+                  { role: 'assistant', content: text },
+                  {
+                    role: 'user',
+                    content: `That was invalid (${problem}). Reply with ONLY corrected JSON that matches the required shape.`
+                  }
+                ],
+                req.maxOut,
+                req.feature ?? null
+              )
+            ).text
           } else if (data === undefined) {
             throw new Error(`unrepairable output (${problem})`)
           }
@@ -332,7 +396,7 @@ export class LlmRouter {
             )
             .run(cacheId, JSON.stringify(data))
         }
-        return { data: data as T, provider: p, model, cached: false }
+        return { data: data as T, provider: p, model: first.model, cached: false }
       } catch (err) {
         const x = this.h(p)
         const msg = (err as Error).message

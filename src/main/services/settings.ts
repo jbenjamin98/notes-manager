@@ -1,7 +1,12 @@
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
-import { SettingsSchema, type Settings } from '../../shared/contract'
+import {
+  MERGED_SETTINGS,
+  SettingsSchema,
+  type Settings,
+  type SettingsPatch
+} from '../../shared/contract'
 
 /** Machine-local settings live in userData (never in the Drive-synced vault). */
 let cache: Settings | null = null
@@ -25,12 +30,23 @@ export function getSettings(): Settings {
   return cache
 }
 
-export function updateSettings(patch: Partial<Settings>): Settings {
-  const next = SettingsSchema.parse({ ...getSettings(), ...patch })
+/** Apply a change: groups (google, llm, ...) are merged field by field, then everything is validated. */
+export function mergeSettings(cur: Settings, patch: SettingsPatch): Settings {
+  const raw: Record<string, unknown> = { ...cur, ...patch }
+  for (const k of MERGED_SETTINGS)
+    if (patch[k] && typeof patch[k] === 'object') raw[k] = { ...cur[k], ...patch[k] }
+  return SettingsSchema.parse(raw)
+}
+
+export function updateSettings(patch: SettingsPatch): Settings {
+  const next = mergeSettings(getSettings(), patch)
   mkdirSync(app.getPath('userData'), { recursive: true })
   const tmp = file() + '.tmp'
   writeFileSync(tmp, JSON.stringify(next, null, 2))
   renameSync(tmp, file())
   cache = next
+  // Every open screen (main window, capture window) sees the change at once.
+  for (const w of BrowserWindow.getAllWindows())
+    if (!w.isDestroyed()) w.webContents.send('settings:changed', next)
   return next
 }

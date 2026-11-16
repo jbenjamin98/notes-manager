@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Rollup } from '@shared/contract'
 import { addDays, shortDate, todayIso } from '../format'
+import { SparkleIcon } from './Icons'
+import { useCountUp } from '../countUp'
 
 const btn =
   'rounded-md border border-line bg-field px-2.5 py-1 text-xs font-medium hover:bg-hover disabled:opacity-50'
 
 function Tile({ n, label, tone }: { n: number; label: string; tone?: 'warn' }): React.JSX.Element {
+  const shown = useCountUp(n)
   return (
     <div className="rounded-2xl border border-line bg-surface p-3 text-center">
       <div className={`text-2xl font-semibold ${tone === 'warn' && n > 0 ? 'text-warn' : ''}`}>
-        {n}
+        {shown}
       </div>
-      <div className="text-[11px] text-muted">{label}</div>
+      <div className="text-xs text-muted">{label}</div>
     </div>
   )
 }
@@ -28,7 +31,7 @@ function Block({
   if (empty) return null
   return (
     <section className="mb-5">
-      <h2 className="mb-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
+      <h2 className="mb-1.5 px-1 text-xs font-semibold tracking-wide text-muted uppercase">
         {title}
       </h2>
       <ul className="space-y-1 rounded-2xl border border-line bg-surface p-2">{children}</ul>
@@ -38,10 +41,12 @@ function Block({
 
 export default function RollupView({
   onOpenNote,
-  onFlash
+  onFlash,
+  onDraft
 }: {
   onOpenNote: (path: string) => void
   onFlash: (m: string) => void
+  onDraft: (weekStart: string, label: string) => void
 }): React.JSX.Element {
   const [weekStart, setWeekStart] = useState<string | undefined>(undefined)
   const [r, setR] = useState<Rollup | null>(null)
@@ -93,7 +98,7 @@ export default function RollupView({
       <div className="mx-auto max-w-2xl px-6 py-6">
         <header className="mb-4 flex items-end gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Weekly review</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Weekly Review</h1>
             <p className="mt-1 text-xs text-muted">
               {r ? `${shortDate(r.weekStart)} to ${shortDate(r.weekEnd)}` : 'Loading…'}
               {thisWeek ? ' (this week)' : ''}. Worked out on this computer from your notes and
@@ -132,6 +137,15 @@ export default function RollupView({
               </button>
               <button className={btn} onClick={() => void save()}>
                 Save as note
+              </button>
+              <button
+                className={`${btn} inline-flex items-center gap-1.5`}
+                onClick={() =>
+                  onDraft(r.weekStart, `${shortDate(r.weekStart)} to ${shortDate(r.weekEnd)}`)
+                }
+              >
+                <SparkleIcon width={12} height={12} className="text-[var(--accent)]" /> Draft my
+                update
               </button>
             </div>
 

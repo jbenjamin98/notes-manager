@@ -34,10 +34,10 @@ export default function InsightsView({
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-6 py-6">
+      <div className="mx-auto max-w-4xl px-8 py-8">
         <header className="flex flex-wrap items-end gap-4">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Word map</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Word Map</h1>
             <p className="mt-1 text-sm text-muted">
               {data
                 ? `${data.notes} note${data.notes === 1 ? '' : 's'} analyzed. Everything is computed on this computer.`
@@ -71,7 +71,7 @@ export default function InsightsView({
           data && (
             <>
               <section className="mt-6 rounded-2xl border border-line bg-surface p-4">
-                <h2 className="text-sm font-semibold">What you talk about</h2>
+                <h2 className="text-sm font-semibold">What You Talk About</h2>
                 <p className="mb-2 text-xs text-muted">
                   Bigger words come up more often across your notes.
                 </p>
@@ -83,7 +83,7 @@ export default function InsightsView({
               </section>
 
               <section className="mt-6 rounded-2xl border border-line bg-surface p-4">
-                <h2 className="text-sm font-semibold">How things connect</h2>
+                <h2 className="text-sm font-semibold">How Things Connect</h2>
                 <p className="mb-2 text-xs text-muted">
                   People, accounts, systems and topics that show up in the same notes are linked.
                   Click one to open it.

@@ -19,7 +19,7 @@ export const KEY_GUIDES: KeyGuide[] = [
       'Press “Open the key page” and sign in with a Google account. A personal account is simplest; some work accounts are blocked by an administrator.',
       'Choose “Create API key”. If it asks for a project, pick “Create API key in new project”.',
       'Copy the key it shows.',
-      'Paste it below, press Save, then Test.'
+      'Paste it below. It is saved and checked straight away.'
     ],
     note: 'This is separate from a Gemini Advanced / Google AI Pro subscription, which does not include an API key.'
   },
@@ -32,7 +32,7 @@ export const KEY_GUIDES: KeyGuide[] = [
       'Open the key page and sign up (Google, GitHub or email).',
       'Choose “Create API Key” and give it any name.',
       'Copy the key right away. Groq shows it only once.',
-      'Paste it below, press Save, then Test.'
+      'Paste it below. It is saved and checked straight away.'
     ]
   },
   {
@@ -56,7 +56,7 @@ export const KEY_GUIDES: KeyGuide[] = [
       'Open the key page and sign in to the OpenAI Platform (this is not the ChatGPT app).',
       'Add a few dollars of credit under Billing. A ChatGPT Plus subscription does not cover the API.',
       'Choose “Create new secret key” and copy it. It is shown only once.',
-      'Paste it below, press Save, then Test.'
+      'Paste it below. It is saved and checked straight away.'
     ]
   },
   {
@@ -68,7 +68,7 @@ export const KEY_GUIDES: KeyGuide[] = [
       'Open the key page and sign in to the Anthropic Console (this is not the Claude chat app).',
       'Add credit under Plans & Billing. A Claude Pro subscription does not cover the API.',
       'Choose “Create Key”, name it and copy it. It is shown only once.',
-      'Paste it below, press Save, then Test.'
+      'Paste it below. It is saved and checked straight away.'
     ]
   }
 ]

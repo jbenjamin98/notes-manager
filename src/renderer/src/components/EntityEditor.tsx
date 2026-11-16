@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { useFocusTrap } from '../useFocusTrap'
 
-export type RegCat = 'person' | 'customer' | 'system'
+export type RegCat = 'person' | 'customer' | 'system' | 'project' | 'place'
 
 export interface EditorValue {
   category: RegCat
@@ -12,8 +13,10 @@ export interface EditorValue {
 
 const OPTIONS: [RegCat, string][] = [
   ['person', 'Person'],
-  ['customer', 'Account'],
-  ['system', 'System']
+  ['customer', 'Company'],
+  ['project', 'Project'],
+  ['system', 'System'],
+  ['place', 'Place']
 ]
 
 /** Small glass dialog to add or edit a person, account or system and its aliases. */
@@ -34,6 +37,8 @@ export default function EntityEditor({
   const [err, setErr] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
+  const dialog = useRef<HTMLFormElement>(null)
+  useFocusTrap(dialog, onCancel)
   useEffect(() => nameRef.current?.focus(), [])
   const editing = value.originalName !== undefined
 
@@ -61,7 +66,9 @@ export default function EntityEditor({
     >
       <form
         onSubmit={(e) => void submit(e)}
+        ref={dialog}
         role="dialog"
+        aria-modal="true"
         aria-label={editing ? 'Edit names' : 'Add to your list'}
         className="glass w-[26rem] rounded-2xl p-5"
         style={{ background: 'var(--sticky)' }}

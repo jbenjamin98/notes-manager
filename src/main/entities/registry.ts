@@ -5,7 +5,10 @@ import { z } from 'zod'
  * config that must survive a lost index and sync across machines. Everything derived (mention
  * counts, auto-discovered people/topics) lives only in SQLite.
  */
-export type RegCategory = 'person' | 'customer' | 'system'
+export type RegCategory = 'person' | 'customer' | 'system' | 'project' | 'place'
+
+/** Every curated category. 'customer' is shown to people as "Companies" (the file key stays `accounts`). */
+export const REG_CATEGORIES: RegCategory[] = ['person', 'customer', 'project', 'system', 'place']
 
 const Entry = z.object({
   name: z.string().trim().min(1).max(120),
@@ -18,7 +21,13 @@ const RegistrySchema = z.object({
   me: z.object({ aliases: z.array(z.string().trim().min(1)).default([]) }).default({ aliases: [] }),
   people: z.array(Entry).default([]),
   accounts: z.array(Entry).default([]),
-  systems: z.array(Entry).default([])
+  systems: z.array(Entry).default([]),
+  projects: z.array(Entry).default([]),
+  places: z.array(Entry).default([]),
+  /** Pairs of names the user said are DIFFERENT things, so they are never suggested as duplicates. */
+  notSame: z.array(z.tuple([z.string(), z.string()])).default([]),
+  /** Names that must never link to anyone on their own ("Joe" when there are several Joes). */
+  ambiguous: z.array(z.string().trim().min(1)).default([])
 })
 export type Registry = z.infer<typeof RegistrySchema>
 
@@ -26,10 +35,12 @@ export const REGISTRY_REL = 'system/entities.json'
 
 export const emptyRegistry = (): Registry => RegistrySchema.parse({})
 
-const KEY: Record<RegCategory, 'people' | 'accounts' | 'systems'> = {
+const KEY: Record<RegCategory, 'people' | 'accounts' | 'systems' | 'projects' | 'places'> = {
   person: 'people',
   customer: 'accounts',
-  system: 'systems'
+  system: 'systems',
+  project: 'projects',
+  place: 'places'
 }
 
 export const listOf = (reg: Registry, c: RegCategory): RegEntry[] => reg[KEY[c]]
@@ -51,6 +62,21 @@ const uniqCI = (xs: string[]): string[] => {
     seen.add(k)
     return true
   })
+}
+
+const pairKey = (a: string, b: string): string =>
+  [a.toLowerCase(), b.toLowerCase()].sort().join('\u0000')
+
+function normPairs(pairs: [string, string][]): [string, string][] {
+  const seen = new Set<string>()
+  const out: [string, string][] = []
+  for (const [a, b] of pairs) {
+    const k = pairKey(a, b)
+    if (a.toLowerCase() === b.toLowerCase() || seen.has(k)) continue
+    seen.add(k)
+    out.push(a.toLowerCase() <= b.toLowerCase() ? [a, b] : [b, a])
+  }
+  return out.sort((x, y) => pairKey(...x).localeCompare(pairKey(...y)))
 }
 
 /** Dedupe, drop aliases equal to the name, sort: stable output keeps Drive diffs/conflicts minimal. */
@@ -79,7 +105,11 @@ export function normalizeRegistry(reg: Registry): Registry {
     me: { aliases: uniqCI(reg.me.aliases).sort((a, b) => a.localeCompare(b)) },
     people: clean(reg.people),
     accounts: clean(reg.accounts),
-    systems: clean(reg.systems)
+    systems: clean(reg.systems),
+    projects: clean(reg.projects),
+    places: clean(reg.places),
+    notSame: normPairs(reg.notSame),
+    ambiguous: uniqCI(reg.ambiguous).sort((a, b) => a.localeCompare(b))
   }
 }
 
@@ -100,6 +130,62 @@ export function upsertEntry(
     (e) => e.name.toLowerCase() !== orig && e.name.toLowerCase() !== name.toLowerCase()
   )
   return normalizeRegistry({ ...reg, [key]: [...rest, { name: name.trim(), aliases }] })
+}
+
+/**
+ * Merge duplicates into one. `others` may be registry entries or just names that were discovered in
+ * notes: every one becomes an alias of `canonical` (with its own aliases), so all their mentions
+ * count for the canonical entry from the next scan. A merged name is also no longer a "different" pair.
+ */
+export function mergeEntries(
+  reg: Registry,
+  category: RegCategory,
+  canonical: string,
+  others: string[]
+): Registry {
+  const key = KEY[category]
+  const lc = (x: string): string => x.toLowerCase()
+  const gone = new Set(others.map(lc).filter((o) => o !== lc(canonical)))
+  const target = reg[key].find((e) => lc(e.name) === lc(canonical))
+  const aliases = [...(target?.aliases ?? [])]
+  for (const o of others) {
+    if (lc(o) === lc(canonical)) continue
+    aliases.push(o)
+    const e = reg[key].find((x) => lc(x.name) === lc(o))
+    if (e) aliases.push(...e.aliases)
+  }
+  const rest = reg[key].filter((e) => lc(e.name) !== lc(canonical) && !gone.has(lc(e.name)))
+  return normalizeRegistry({
+    ...reg,
+    [key]: [...rest, { name: target?.name ?? canonical.trim(), aliases }],
+    // Pairs involving a name that was just merged away are moot.
+    notSame: reg.notSame.filter(([a, b]) => !gone.has(lc(a)) && !gone.has(lc(b)))
+  })
+}
+
+/** Move an entry (or a discovered name) to another category, keeping its aliases. */
+export function moveEntry(
+  reg: Registry,
+  from: RegCategory,
+  to: RegCategory,
+  name: string
+): Registry {
+  if (from === to) return reg
+  const e = reg[KEY[from]].find((x) => x.name.toLowerCase() === name.toLowerCase())
+  const without = removeEntry(reg, from, name)
+  return upsertEntry(without, to, e?.name ?? name.trim(), e?.aliases ?? [])
+}
+
+export function markNotSame(reg: Registry, a: string, b: string): Registry {
+  return normalizeRegistry({ ...reg, notSame: [...reg.notSame, [a, b]] })
+}
+
+export const isNotSame = (reg: Registry, a: string, b: string): boolean =>
+  reg.notSame.some(([x, y]) => pairKey(x, y) === pairKey(a, b))
+
+export function setAmbiguous(reg: Registry, name: string, on: boolean): Registry {
+  const rest = reg.ambiguous.filter((n) => n.toLowerCase() !== name.toLowerCase())
+  return normalizeRegistry({ ...reg, ambiguous: on ? [...rest, name.trim()] : rest })
 }
 
 export function removeEntry(reg: Registry, category: RegCategory, name: string): Registry {
@@ -143,16 +229,28 @@ export interface Matcher {
   lookup: Map<string, { category: RegCategory; name: string }>
   /** lowercased names that mean "me" (never become a person) */
   me: Set<string>
+  /** lowercased names shared by several things (or marked ambiguous): never linked to one without a review */
+  ambiguous: Set<string>
 }
 
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-export function buildMatcher(reg: Registry, meAliases: string[], seeds: PoolSeed[] = []): Matcher {
+export function buildMatcher(
+  reg: Registry,
+  meAliases: string[],
+  seeds: PoolSeed[] = [],
+  /** Short names shared by several people ("Jacob"): treated like names marked ambiguous. */
+  shared: string[] = []
+): Matcher {
   const entries: MatchEntry[] = []
   const lookup = new Map<string, { category: RegCategory; name: string }>()
-  for (const category of ['person', 'customer', 'system'] as RegCategory[]) {
+  const ambiguous = new Set([...reg.ambiguous, ...shared].map((a) => a.toLowerCase()))
+  for (const category of REG_CATEGORIES) {
     for (const e of listOf(reg, category)) {
-      const terms = [e.name, ...e.aliases].sort((a, b) => b.length - a.length)
+      const terms = [e.name, ...e.aliases]
+        .filter((t) => !ambiguous.has(t.toLowerCase()))
+        .sort((a, b) => b.length - a.length)
+      if (terms.length === 0) continue
       for (const t of terms) lookup.set(t.toLowerCase(), { category, name: e.name })
       entries.push({
         category,
@@ -171,7 +269,7 @@ export function buildMatcher(reg: Registry, meAliases: string[], seeds: PoolSeed
   for (const s of seeds) {
     for (const t of s.terms) {
       const k = t.toLowerCase()
-      if (!t.trim() || me.has(k) || lookup.has(k) || byTerm.has(k)) continue
+      if (!t.trim() || me.has(k) || lookup.has(k) || byTerm.has(k) || ambiguous.has(k)) continue
       byTerm.set(k, { category: s.category, name: s.name, inRegistry: s.inRegistry })
     }
   }
@@ -191,5 +289,5 @@ export function buildMatcher(reg: Registry, meAliases: string[], seeds: PoolSeed
       byTerm
     }
   }
-  return { pool, entries, lookup, me }
+  return { pool, entries, lookup, me, ambiguous }
 }

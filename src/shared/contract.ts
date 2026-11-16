@@ -18,11 +18,13 @@ export const SettingsSchema = z.object({
       enabled: z.boolean().default(true),
       /** Pop up Windows notifications (the feed in the app always gets them). */
       toasts: z.boolean().default(true),
+      /** Also notify outside work hours and on weekends (time-critical nudges always notify). */
+      afterHours: z.boolean().default(false),
       /** Per-rule switches; a missing rule is on. */
       rules: z.record(z.string(), z.boolean()).default({}),
       eodTime: z.string().default('16:45')
     })
-    .default({ enabled: true, toasts: true, rules: {}, eodTime: '16:45' }),
+    .default({ enabled: true, toasts: true, afterHours: false, rules: {}, eodTime: '16:45' }),
   /** Closing the window keeps the app in the system tray so nudges still arrive. */
   runInBackground: z.boolean().default(true),
   /** Start (hidden, in the tray) when I sign in to Windows. Per-user: no admin needed. */
@@ -35,6 +37,52 @@ export const SettingsSchema = z.object({
   gmailLabels: z.record(z.string(), z.enum(['ignore', 'info', 'tasks'])).default({}),
   /** The first-run setup guide has been finished or skipped. */
   setupDone: z.boolean().default(false),
+  /** Which Google source the user chose: their own Apps Script web app ("script") or Google sign-in ("oauth"). */
+  google: z
+    .object({
+      // Older settings files say 'session' / 'api'; they mean 'script' / 'oauth'.
+      method: z
+        .preprocess(
+          (v) => (v === 'session' ? 'script' : v === 'api' ? 'oauth' : v),
+          z.enum(['script', 'oauth'])
+        )
+        .default('script'),
+      clientId: z.string().default(''),
+      /** Your Apps Script web-app address (the secondary source, for accounts that cannot use OAuth). */
+      bridgeUrl: z.string().default(''),
+      meetNotes: z.boolean().default(true),
+      /** Copy the whole Gemini document into the meeting note (default: key points and a Drive link). */
+      meetFullText: z.boolean().default(false),
+      /** Read the text of recent email threads (in memory only) to find actions and decisions. */
+      readMailBodies: z.boolean().default(true),
+      chat: z.boolean().default(false)
+    })
+    .default({
+      method: 'script',
+      clientId: '',
+      bridgeUrl: '',
+      meetNotes: true,
+      meetFullText: false,
+      readMailBodies: true,
+      chat: false
+    }),
+  assistant: z
+    .object({
+      persona: z.enum(['nova', 'pip', 'sage', 'rook']).default('nova'),
+      /** The assistant messages you on its own (brief, meeting heads-up, overdue, reply owed, wrap-up). */
+      proactive: z.boolean().default(true)
+    })
+    .default({ persona: 'nova', proactive: true }),
+  /** Writing the missing @ and # into what you type. */
+  autoTag: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Let a small AI model also find new topics and names. */
+      ai: z.boolean().default(true),
+      /** Lowercase words never to tag. */
+      ignore: z.array(z.string().max(60)).max(500).default([])
+    })
+    .default({ enabled: true, ai: true, ignore: [] }),
   /** Global quick-capture window (works from any app). */
   quickCapture: z
     .object({
@@ -45,18 +93,50 @@ export const SettingsSchema = z.object({
   llm: z
     .object({
       enabled: z.boolean().default(true),
-      /** Notes tagged CUI are never sent to any LLM (see SPEC §7). */
-      blockCui: z.boolean().default(true),
       /** Optional model-name overrides (free-tier model names change). */
       models: z.record(z.string(), z.record(z.string(), z.string())).default({}),
+      /** How much AI to use: light (fewest tokens), normal, or heavy (most thorough). */
+      mode: z.enum(['light', 'normal', 'heavy']).default('normal'),
+      /** Most tokens the app may spend per day (0 = no limit). */
+      dailyTokenBudget: z.number().int().min(0).max(5_000_000).default(60_000),
       /** Providers switched off by the user (their keys stay saved). */
       disabled: z.array(z.string()).default([]),
       /** Provider preference order; providers not listed follow in the default order. */
       order: z.array(z.string()).default([])
     })
-    .default({ enabled: true, blockCui: true, models: {}, disabled: [], order: [] })
+    .default({
+      enabled: true,
+      models: {},
+      mode: 'normal',
+      dailyTokenBudget: 60_000,
+      disabled: [],
+      order: []
+    })
 })
 export type Settings = z.infer<typeof SettingsSchema>
+
+/** Settings groups that are merged field by field on update (records like gmailLabels are replaced). */
+export const MERGED_SETTINGS = [
+  'workHours',
+  'nudges',
+  'google',
+  'llm',
+  'assistant',
+  'quickCapture',
+  'autoTag'
+] as const
+type Merged = (typeof MERGED_SETTINGS)[number]
+/**
+ * A settings change. Groups are patched field by field so one screen can never overwrite another
+ * screen's fields (for example the script address) with a stale copy.
+ */
+export type SettingsPatch = { [K in Exclude<keyof Settings, Merged>]?: Settings[K] } & {
+  [K in Merged]?: Partial<Settings[K]>
+}
+export const SettingsPatchSchema = z.custom<SettingsPatch>(
+  (v) => typeof v === 'object' && v !== null && !Array.isArray(v),
+  'Expected a settings object'
+)
 
 const AppInfo = z.object({
   version: z.string(),
@@ -154,6 +234,7 @@ const NudgeAction = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open-note'), path: z.string(), label: z.string() }),
   z.object({ type: z.literal('open-tasks'), filter: z.string(), label: z.string() }),
   z.object({ type: z.literal('open-email'), label: z.string() }),
+  z.object({ type: z.literal('open-chat'), label: z.string() }),
   z.object({ type: z.literal('open-rollup'), label: z.string() })
 ])
 export type NudgeAction = z.infer<typeof NudgeAction>
@@ -169,7 +250,8 @@ const NudgeItem = z.object({
     'blocker',
     'eod',
     'reminder',
-    'rollup'
+    'rollup',
+    'chat'
   ]),
   title: z.string(),
   body: z.string(),
@@ -212,7 +294,10 @@ const TaskRow = z.object({
   status: z.enum(['open', 'completed']),
   /** Owner / due date were detected from the wording, not typed. */
   autoOwner: z.boolean(),
-  autoDue: z.boolean()
+  autoDue: z.boolean(),
+  /** The insight this task came from, and a readable name for it ("Chat · Priya · Nov 14"). */
+  sourceId: z.string().nullable().default(null),
+  sourceLabel: z.string().nullable().default(null)
 })
 export type TaskRow = z.infer<typeof TaskRow>
 
@@ -225,9 +310,30 @@ const TaskItem = TaskRow.extend({
 })
 export type TaskItem = z.infer<typeof TaskItem>
 
-export const EntityCategory = z.enum(['person', 'customer', 'system', 'event', 'topic'])
+export const EntityCategory = z.enum([
+  'person',
+  'customer',
+  'system',
+  'project',
+  'place',
+  'event',
+  'topic'
+])
 export type EntityCategory = z.infer<typeof EntityCategory>
-const RegCategory = z.enum(['person', 'customer', 'system'])
+export const RegCategory = z.enum(['person', 'customer', 'system', 'project', 'place'])
+
+export const EntitySuggestion = z.object({
+  kind: z.enum(['merge', 'category']),
+  category: EntityCategory,
+  /** merge: suggested canonical name first. category: the one name. */
+  names: z.array(z.string()),
+  /** category: where it probably belongs. */
+  to: RegCategory.nullable(),
+  reason: z.string(),
+  score: z.number(),
+  ambiguous: z.boolean()
+})
+export type EntitySuggestion = z.infer<typeof EntitySuggestion>
 
 const EntitySummary = z.object({
   id: z.string(),
@@ -288,11 +394,17 @@ const VocabEntry = z.object({
   category: EntityCategory,
   terms: z.array(z.string()),
   /** true = match the exact capitalisation (discovered names); false = case-insensitive (registry). */
-  exact: z.boolean()
+  exact: z.boolean(),
+  /** Tagged, but needs to be reviewed (a name shared by two people). */
+  review: z.boolean().optional()
 })
 export type VocabEntry = z.infer<typeof VocabEntry>
 
 const PrepDossier = z.object({
+  /** Documents attached to the invite. */
+  attachments: z
+    .array(z.object({ fileId: z.string(), title: z.string(), url: z.string() }))
+    .default([]),
   event: z.object({
     id: z.string(),
     title: z.string(),
@@ -383,6 +495,13 @@ export const Proposal = z.discriminatedUnion('kind', [
     at: z.string().nullable(),
     atNote: z.string().nullable(),
     status: ProposalStatus
+  }),
+  z.object({
+    kind: z.literal('email'),
+    to: z.string().nullable(),
+    subject: z.string(),
+    body: z.string(),
+    status: ProposalStatus
   })
 ])
 export type Proposal = z.infer<typeof Proposal>
@@ -403,9 +522,14 @@ const ChatMessage = z.object({
   createdAt: z.string(),
   proposals: z.array(Proposal),
   citations: z.array(Citation),
-  /** Plain-language note about how this answer was made ("Kept on this computer: CUI", "Offline answer"). */
+  /** Plain-language note about how this answer was made ("Answered on your computer", "Offline answer"). */
   notice: z.string().nullable(),
-  via: z.enum(['llm', 'local']).nullable()
+  via: z.enum(['llm', 'local']).nullable(),
+  /** Questions or actions the user might want next. `Label::action:arg` runs an action. */
+  followups: z.array(z.string()),
+  /** chat, or why the assistant spoke up on its own. */
+  kind: z.enum(['chat', 'brief', 'pre_meeting', 'overdue', 'nudge']),
+  unread: z.boolean()
 })
 export type ChatMessage = z.infer<typeof ChatMessage>
 
@@ -444,6 +568,9 @@ const LlmProviderStatus = z.object({
 })
 export const LlmStatus = z.object({
   enabled: z.boolean(),
+  budget: z.object({ used: z.number(), limit: z.number() }),
+  /** Tokens spent today by purpose. */
+  usage: z.array(z.object({ feature: z.string(), tokens: z.number() })).default([]),
   canStoreKeys: z.boolean(),
   providers: z.array(LlmProviderStatus)
 })
@@ -482,6 +609,157 @@ export const Rollup = z.object({
 })
 export type Rollup = z.infer<typeof Rollup>
 
+export const GoogleStatus = z.object({
+  method: z.enum(['script', 'oauth']),
+  hasClient: z.boolean(),
+  /** The app ships with the organisation's sign-in: nothing to paste. */
+  defaultClient: z.boolean().default(false),
+  connected: z.boolean(),
+  email: z.string().nullable(),
+  scopes: z.object({
+    calendar: z.boolean(),
+    gmail: z.boolean(),
+    meet: z.boolean(),
+    chat: z.boolean()
+  }),
+  lastError: z.string().nullable(),
+  meet: z.object({ files: z.number(), lastAt: z.string().nullable() }),
+  chat: z.object({ messages: z.number(), lastAt: z.string().nullable() })
+})
+export type GoogleStatus = z.infer<typeof GoogleStatus>
+
+export const BridgeStatus = z.object({
+  configured: z.boolean(),
+  url: z.string(),
+  hasToken: z.boolean(),
+  /** Version of the script bundled with this app; the deployed one must be at least MIN. */
+  bundledVersion: z.number()
+})
+export type BridgeStatus = z.infer<typeof BridgeStatus>
+export const BridgeVerify = z.object({
+  ok: z.boolean(),
+  email: z.string().nullable(),
+  version: z.number().nullable(),
+  code: z.string().nullable(),
+  message: z.string().nullable(),
+  sections: z.array(z.object({ name: z.string(), ok: z.boolean(), error: z.string().nullable() }))
+})
+export type BridgeVerify = z.infer<typeof BridgeVerify>
+
+const ChatReason = z.enum([
+  'dm',
+  'mention',
+  'reply-to-me',
+  'question',
+  'deadline',
+  'topic',
+  'frequent',
+  'recent',
+  'unanswered'
+])
+export const ChatConversation = z.object({
+  key: z.string(),
+  space: z.string(),
+  spaceName: z.string(),
+  spaceType: z.string(),
+  title: z.string(),
+  lastAt: z.string(),
+  lastText: z.string(),
+  lastSender: z.string(),
+  lastFromMe: z.boolean(),
+  messages: z.number(),
+  score: z.number(),
+  reasons: z.array(ChatReason),
+  bucket: z.enum(['needs-you', 'waiting', 'fyi', 'noise']),
+  ageHours: z.number(),
+  awaitingMeHours: z.number(),
+  awaitingThemHours: z.number()
+})
+export type ChatConversation = z.infer<typeof ChatConversation>
+export const ChatOverview = z.object({
+  conversations: z.array(ChatConversation),
+  commitments: z.array(
+    z.object({ convKey: z.string(), spaceName: z.string(), text: z.string(), at: z.string() })
+  ),
+  spaces: z.array(
+    z.object({
+      space: z.string(),
+      name: z.string(),
+      type: z.string(),
+      mode: z.enum(['auto', 'track', 'mentions', 'ignore'])
+    })
+  ),
+  /** Where the messages come from and how complete that is. */
+  source: z.enum(['api', 'bridge', 'none']),
+  complete: z.boolean(),
+  lastAt: z.string().nullable()
+})
+export type ChatOverview = z.infer<typeof ChatOverview>
+
+export const GoogleConnection = z.object({
+  source: z.enum(['api', 'bridge', 'none']),
+  state: z.enum([
+    'ok',
+    'syncing',
+    'not-set-up',
+    'missing-key',
+    'needs-login',
+    'needs-update',
+    'busy',
+    'error'
+  ]),
+  label: z.string(),
+  detail: z.string(),
+  action: z.enum(['setup', 'sign-in', 'copy-script', 'refresh']).nullable(),
+  actionLabel: z.string().nullable(),
+  email: z.string().nullable(),
+  lastSyncAt: z.string().nullable()
+})
+export type GoogleConnection = z.infer<typeof GoogleConnection>
+
+export const GoogleHealth = z.object({
+  rows: z.array(
+    z.object({
+      section: z.enum(['calendar', 'mail', 'meet', 'chat']),
+      label: z.string(),
+      source: z.enum(['api', 'bridge', 'none']),
+      state: z.enum(['healthy', 'syncing', 'needs-login', 'degraded', 'partial', 'off']),
+      lastAt: z.string().nullable(),
+      detail: z.string()
+    })
+  )
+})
+export type GoogleHealth = z.infer<typeof GoogleHealth>
+
+export const InsightKind = z.enum([
+  'action',
+  'ask',
+  'promise',
+  'decision',
+  'question',
+  'risk',
+  'change',
+  'fact'
+])
+export const InsightItem = z.object({
+  id: z.string(),
+  kind: InsightKind,
+  text: z.string(),
+  owner: z.string().nullable(),
+  due: z.string().nullable(),
+  confidence: z.number(),
+  status: z.enum(['new', 'accepted', 'dismissed']),
+  sourceType: z.enum(['meeting', 'email', 'chat', 'note']),
+  /** "Chat · Priya · Nov 14": a readable pointer back to where it came from. */
+  sourceLabel: z.string(),
+  sourceSnippet: z.string(),
+  sourceAt: z.string().nullable(),
+  entities: z.array(z.string()),
+  /** Yours to do (no owner, or one of your names). Others' actions are saved as Waiting On. */
+  mine: z.boolean().default(true)
+})
+export type InsightItem = z.infer<typeof InsightItem>
+
 const NotePath = z.object({ path: z.string() })
 const NoteContent = z.object({ content: z.string(), hash: z.string() })
 const SaveResult = z.object({ ok: z.boolean(), content: z.string(), hash: z.string() })
@@ -490,7 +768,7 @@ const SaveResult = z.object({ ok: z.boolean(), content: z.string(), hash: z.stri
 export const contract = {
   'app:info': { input: z.void(), output: AppInfo },
   'settings:get': { input: z.void(), output: SettingsSchema },
-  'settings:update': { input: SettingsSchema.partial(), output: SettingsSchema },
+  'settings:update': { input: SettingsPatchSchema, output: SettingsSchema },
   'vault:choose-folder': { input: z.void(), output: z.string().nullable() },
   'db:health': { input: z.void(), output: DbHealth },
   'vault:status': { input: z.void(), output: VaultStatus },
@@ -500,11 +778,67 @@ export const contract = {
   'tasks:quick-add': {
     input: z.object({ text: z.string().max(500) }),
     output: z.object({
+      /** 'waiting' = it was for someone else, so it became a Waiting On note line. */
+      kind: z.enum(['task', 'waiting']).default('task'),
       path: z.string(),
       description: z.string(),
       owner: z.string(),
       due: z.string().nullable()
     })
+  },
+  'names:review': {
+    input: z.void(),
+    output: z.array(
+      z.object({
+        short: z.string(),
+        candidates: z.array(
+          z.object({ name: z.string(), notes: z.number(), category: z.string().default('person') })
+        ),
+        mentions: z.array(
+          z.object({
+            path: z.string(),
+            title: z.string(),
+            date: z.string(),
+            snippet: z.string(),
+            count: z.number()
+          })
+        )
+      })
+    )
+  },
+  /** Assign a short name in these notes to a person (a new one is added to People). */
+  'names:assign': {
+    input: z.object({
+      paths: z.array(z.string()).min(1).max(500),
+      short: z.string().min(1).max(80),
+      person: z.string().min(1).max(120),
+      /** What a new name is (default person). */
+      category: z.enum(['person', 'customer', 'project', 'system', 'place']).optional()
+    }),
+    output: z.number()
+  },
+  'names:unassign': {
+    input: z.object({ paths: z.array(z.string()).min(1).max(500), short: z.string().min(1) }),
+    output: z.number()
+  },
+  'waiting:list': {
+    input: z.void(),
+    output: z.array(
+      z.object({
+        who: z.string(),
+        text: z.string(),
+        due: z.string().nullable(),
+        line: z.string(),
+        notePath: z.string(),
+        noteTitle: z.string(),
+        since: z.string(),
+        done: z.boolean()
+      })
+    )
+  },
+  'waiting:done': {
+    input: z.object({ path: z.string(), line: z.string() }),
+    output: z.boolean()
   },
   'tasks:set-due': {
     input: z.object({
@@ -518,6 +852,41 @@ export const contract = {
   },
   'entities:list': { input: z.void(), output: z.array(EntitySummary) },
   'entities:vocabulary': { input: z.void(), output: z.array(VocabEntry) },
+  /** Everything that can be auto-tagged: your lists plus topics, without your own or shared names. */
+  'tags:vocabulary': { input: z.void(), output: z.array(VocabEntry) },
+  /** Ask the small model for new topics and names in one line you just wrote. */
+  'tags:suggest': {
+    input: z.object({ line: z.string().min(1).max(600) }),
+    output: z.object({
+      tags: z.array(
+        z.object({
+          /** The exact words in the line. */
+          text: z.string(),
+          kind: z.enum(['topic', 'person', 'customer', 'project', 'system', 'place'])
+        })
+      ),
+      via: z.enum(['llm', 'rules', 'none'])
+    })
+  },
+  /** Add new names to your lists (so the tag you write is understood). */
+  /** Tag a note you wrote before auto-tagging: returns what changed and the original text (for undo). */
+  'tags:tag-note': {
+    input: z.object({ path: z.string() }),
+    output: z.object({ count: z.number(), before: z.string().nullable() })
+  },
+  'tags:learn': {
+    input: z.object({
+      names: z
+        .array(
+          z.object({
+            name: z.string().trim().min(1).max(120),
+            category: z.enum(['person', 'customer', 'project', 'system', 'place'])
+          })
+        )
+        .max(10)
+    }),
+    output: z.null()
+  },
   'notes:entities': { input: NotePath, output: z.array(NoteEntity) },
   'entities:detail': { input: z.object({ id: z.string() }), output: Dossier },
   'entities:upsert': {
@@ -529,6 +898,55 @@ export const contract = {
     }),
     output: z.null()
   },
+  'entities:manage-list': {
+    input: z.void(),
+    output: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        category: EntityCategory,
+        inRegistry: z.boolean(),
+        notes: z.number(),
+        mentions: z.number(),
+        lastDate: z.string().nullable(),
+        aliases: z.array(z.string()),
+        ambiguous: z.boolean()
+      })
+    )
+  },
+  'entities:merge': {
+    input: z.object({
+      category: RegCategory,
+      canonical: z.string().trim().min(1).max(120),
+      others: z.array(z.string().trim().min(1).max(120)).min(1).max(30)
+    }),
+    output: z.null()
+  },
+  'entities:recategorize': {
+    input: z.object({
+      from: EntityCategory,
+      to: RegCategory,
+      name: z.string().trim().min(1).max(120)
+    }),
+    output: z.null()
+  },
+  'entities:not-same': {
+    input: z.object({ a: z.string().trim().min(1).max(120), b: z.string().trim().min(1).max(120) }),
+    output: z.null()
+  },
+  'entities:ambiguous': {
+    input: z.object({ name: z.string().trim().min(1).max(120), on: z.boolean() }),
+    output: z.null()
+  },
+  'entities:suggestions': { input: z.void(), output: z.array(EntitySuggestion) },
+  'entities:ai-suggest': {
+    input: z.void(),
+    output: z.object({
+      suggestions: z.array(EntitySuggestion),
+      via: z.enum(['llm', 'local']),
+      notice: z.string().nullable()
+    })
+  },
   'entities:remove': {
     input: z.object({ category: RegCategory, name: z.string() }),
     output: z.null()
@@ -537,6 +955,14 @@ export const contract = {
     input: z.object({ days: z.number().int().positive().max(3650).nullable() }),
     output: Insights
   },
+  'notes:search': {
+    input: z.object({ query: z.string().max(200) }),
+    output: z.array(z.string())
+  },
+  'app:diagnostics': { input: z.void(), output: z.string() },
+  'app:backup': { input: z.void(), output: z.object({ path: z.string() }).nullable() },
+  'app:open-logs': { input: z.void(), output: z.null() },
+  'mail:clear': { input: z.void(), output: z.null() },
   'notes:entity-map': {
     input: z.void(),
     output: z.array(
@@ -563,6 +989,10 @@ export const contract = {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       account: z.string().optional()
     }),
+    output: NotePath
+  },
+  'notes:quick-note': {
+    input: z.object({ text: z.string().min(1).max(20000) }),
     output: NotePath
   },
   'notes:set-title': {
@@ -602,7 +1032,14 @@ export const contract = {
     input: z.object({ id: z.string(), minutes: z.number().int().min(5).max(2880).optional() }),
     output: z.null()
   },
-  'nudges:test': { input: z.void(), output: z.null() },
+  'nudges:test': {
+    input: z.void(),
+    output: z.object({
+      supported: z.boolean(),
+      shown: z.boolean(),
+      error: z.string().nullable()
+    })
+  },
   'gmail:status': { input: z.void(), output: GmailStatus },
   'gmail:sync': {
     input: z.object({ full: z.boolean().optional() }).optional(),
@@ -636,14 +1073,98 @@ export const contract = {
   },
   'gmail:guess-email': { input: z.object({ name: z.string() }), output: z.string().nullable() },
   'google:open-login': { input: z.void(), output: z.null() },
+  'google:api-status': { input: z.void(), output: GoogleStatus },
+  'google:api-configure': {
+    input: z.object({
+      clientId: z.string().max(300),
+      clientSecret: z.string().max(300).optional()
+    }),
+    output: GoogleStatus
+  },
+  'google:bridge-status': { input: z.void(), output: BridgeStatus },
+  'google:bridge-configure': {
+    input: z.object({ url: z.string().max(600) }),
+    output: BridgeStatus
+  },
+  'google:bridge-script': {
+    input: z.void(),
+    output: z.object({ script: z.string(), manifest: z.string() })
+  },
+  'google:bridge-verify': { input: z.void(), output: BridgeVerify },
+  'google:repair': { input: z.void(), output: BridgeVerify },
+  'google:health': { input: z.void(), output: GoogleHealth },
+  'google:connection': { input: z.void(), output: GoogleConnection },
+  'google:refresh': {
+    input: z.void(),
+    output: z.object({ ok: z.boolean(), message: z.string(), connection: GoogleConnection })
+  },
+  'inbox:list': { input: z.void(), output: z.array(InsightItem) },
+  'inbox:accept': {
+    input: z.object({
+      id: z.string(),
+      text: z.string().max(400).optional(),
+      owner: z.string().max(80).nullable().optional(),
+      due: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .nullable()
+        .optional()
+    }),
+    output: z.object({ kind: z.enum(['task', 'note', 'waiting']), path: z.string() })
+  },
+  'inbox:dismiss': { input: z.object({ id: z.string() }), output: z.null() },
+  'inbox:open-source': {
+    input: z.object({ id: z.string() }),
+    output: z.object({ path: z.string().nullable() })
+  },
+  'inbox:refresh': { input: z.void(), output: z.object({ added: z.number() }) },
+  'insights:for-entity': { input: z.object({ name: z.string() }), output: z.array(InsightItem) },
+  'chat:overview': { input: z.void(), output: ChatOverview },
+  'chat:feedback': {
+    input: z.object({ key: z.string(), reasons: z.array(ChatReason), relevant: z.boolean() }),
+    output: z.null()
+  },
+  'chat:set-mode': {
+    input: z.object({ space: z.string(), mode: z.enum(['auto', 'track', 'mentions', 'ignore']) }),
+    output: z.null()
+  },
+  'google:api-connect': { input: z.void(), output: GoogleStatus },
+  'google:api-disconnect': { input: z.void(), output: GoogleStatus },
   'app:set-theme': { input: z.object({ mode: ThemeMode }), output: z.null() },
   'assistant:send': {
     input: z.object({
       text: z.string().min(1).max(8000),
-      mode: z.enum(['auto', 'ask', 'capture']).optional()
+      mode: z.enum(['auto', 'ask', 'capture']).optional(),
+      /** Do not add the text to the chat as something you said (a button press, not a message). */
+      quiet: z.boolean().optional()
     }),
     output: z.array(ChatMessage)
   },
+  'assistant:action': {
+    input: z.object({
+      kind: z.enum([
+        'summarize-note',
+        'extract-actions',
+        'draft-followup',
+        'prep-brief',
+        'week-update',
+        'day-brief',
+        'catch-up',
+        'chat-digest'
+      ]),
+      path: z.string().optional(),
+      eventId: z.string().optional(),
+      weekStart: z.string().optional(),
+      entityId: z.string().optional(),
+      /** Do not keep this exchange in the chat history (used for the automatic Home brief). */
+      ephemeral: z.boolean().optional(),
+      /** Answer from rules on this computer first (no AI). Falls back to the AI when rules cannot. */
+      quick: z.boolean().optional()
+    }),
+    output: z.array(ChatMessage)
+  },
+  'assistant:unread': { input: z.void(), output: z.number() },
+  'assistant:mark-read': { input: z.void(), output: z.null() },
   'assistant:history': { input: z.void(), output: z.array(ChatMessage) },
   'assistant:apply': {
     input: z.object({
@@ -664,6 +1185,13 @@ export const contract = {
     output: LlmStatus
   },
   'capture:hide': { input: z.void(), output: z.null() },
+  /** The capture window grows with the text (height in CSS pixels, clamped in main). */
+  'capture:resize': {
+    input: z.object({ height: z.number().int().min(100).max(600) }),
+    output: z.null()
+  },
+  /** Too long for the small box: save it as a note and continue in the app. */
+  'capture:handoff': { input: z.object({ text: z.string().min(1).max(20000) }), output: NotePath },
   'capture:status': {
     input: z.void(),
     output: z.object({ registered: z.boolean(), hotkey: z.string() })
@@ -706,7 +1234,13 @@ export const events = {
   'gmail:changed': GmailStatus,
   'nudges:changed': z.object({ unread: z.number() }),
   'nudges:focus': z.object({ id: z.string().nullable() }),
-  'capture:shown': z.null()
+  'assistant:changed': z.object({ unread: z.number() }),
+  'assistant:focus': z.null(),
+  'capture:shown': z.null(),
+  'google:changed': GoogleConnection,
+  /** What the assistant is doing right now ("Checking your calendar…"). */
+  'assistant:progress': z.object({ label: z.string() }),
+  'app:open-note': z.object({ path: z.string() })
 } as const satisfies Record<EventChannel, z.ZodType>
 
 export type Input<C extends InvokeChannel> = z.input<(typeof contract)[C]['input']>

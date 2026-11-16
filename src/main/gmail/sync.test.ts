@@ -184,7 +184,7 @@ describe('gmail health + crawl planning', () => {
       () => 45
     )
     await s.sync()
-    expect(seen[0]).toEqual({ days: 45, maxPages: 80 }) // 45 days -> 100 pages wanted, capped at 80
+    expect(seen[0]).toMatchObject({ days: 45, maxPages: 80 }) // 45 days -> 100 pages wanted, capped at 80
     expect(s.getStatus()).toMatchObject({
       lastFull: true,
       partial: false,
@@ -192,7 +192,7 @@ describe('gmail health + crawl planning', () => {
       health: 'ok'
     })
     await s.sync()
-    expect(seen[1]).toEqual({ days: 3, maxPages: 8 }) // within 6h of a complete full crawl
+    expect(seen[1]).toMatchObject({ days: 3, maxPages: 8 }) // within 6h of a complete full crawl
     await s.sync(true)
     expect(seen[2].days).toBe(45) // manual full refresh
 
@@ -237,5 +237,46 @@ describe('gmail health + crawl planning', () => {
     )
     await o.sync()
     expect(off).toBe(0)
+  })
+})
+
+describe('after Google slows mail down', () => {
+  it('saves what was read, then does small reads (not the whole crawl) until the pause ends', async () => {
+    const db = openDb(':memory:')
+    const seen: { days: number; since: string | null | undefined }[] = []
+    let limited = true
+    const row = {
+      legacyId: 'a1',
+      threadId: null,
+      senders: [{ name: 'Priya', email: 'priya@x.com' }],
+      subject: 'Budget',
+      snippet: '',
+      timeTitle: 'Nov 14',
+      unread: true,
+      starred: false,
+      labels: ['Inbox']
+    }
+    const s = new GmailSync(db, async (o) => {
+      seen.push({ days: o.days, since: o.sinceHistoryId })
+      return {
+        signedIn: true,
+        selfEmail: 'me@x.com',
+        rows: [row],
+        starred: [],
+        pages: 1,
+        reachedCutoff: !limited,
+        rateLimited: limited,
+        historyId: limited ? null : '7',
+        incremental: false
+      }
+    })
+    await s.sync() // first read: limited part way, rows kept
+    expect(s.getStatus().threads).toBe(1)
+    expect(s.getStatus().state).toBe('idle')
+    expect(s.getStatus().lastSyncAt).not.toBeNull()
+    limited = false
+    await s.sync() // paused: a small recent read, not the full window
+    expect(seen[1].days).toBe(3)
+    expect(seen[0].days).toBeGreaterThan(3)
   })
 })

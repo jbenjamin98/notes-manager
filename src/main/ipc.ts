@@ -1,10 +1,12 @@
-import { app, dialog, ipcMain, nativeTheme, shell, BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { reviewQueue } from './entities/review'
+import { addWaiting, listWaiting, markReceived, ownerIsMe } from './waiting/waiting'
+import { parseQuickAdd } from '../shared/quickadd'
 import { contract, type Output, type Result } from '../shared/contract'
-import type { InvokeChannel } from '../shared/channels'
-import type { Db } from './db'
+import { type InvokeChannel } from '../shared/channels'
 import { health } from './db'
-import { openLogin, openCompose, openThread, scrapeEventDetail } from './services/google'
-import { cleanMeetUrl, loadDetail, normalizeGuests, saveDetail } from './calendar/detail'
+import { openCompose, openThread } from './services/google'
+import { cleanMeetUrl, loadDetail } from './calendar/detail'
 import { buildDossier, buildRange } from './prep/dossier'
 import {
   addMute,
@@ -14,49 +16,53 @@ import {
   listMutes,
   overview,
   recordAction,
-  removeMute,
-  type GmailSync
+  removeMute
 } from './gmail/sync'
-import type { NudgeEngine } from './nudges/engine'
 import { sanitizeTaskText, suggestTaskText } from './gmail/parse'
-import { listUpcoming, localDate, type CalendarSync } from './calendar/sync'
+import { listUpcoming } from './calendar/sync'
 import { openEventNote } from './calendar/openEvent'
-import type { Vault, TaskItem } from './vault/vault'
-import { tasksTiedTo } from './entities/store'
-import type { Dossier } from './entities/store'
+import { type Vault, type TaskItem } from './vault/vault'
+import { tasksTiedTo, type Dossier } from './entities/store'
 import { getSettings, updateSettings } from './services/settings'
-import { z } from 'zod'
-import type { Assistant } from './assistant/assistant'
-import type { LlmRouter } from './llm/router'
-import type { SecretStore } from './services/secrets'
-import { orderedProviders } from './llm/config'
-import type { CaptureWindow } from './capture'
+import {
+  markNotSame,
+  mergeEntries,
+  moveEntry,
+  setAmbiguous,
+  upsertEntry,
+  type RegCategory
+} from './entities/registry'
+import { suggestDuplicates } from './entities/dedupe'
+import { searchNotePaths } from './assistant/retrieve'
+import { logDir, recentLog } from './services/logger'
+import { todayIn, wallClock } from '../shared/tz'
+import { execFile } from 'node:child_process'
+import { basename, dirname, join } from 'node:path'
+import { release } from 'node:os'
+import { isDriveDocUrl } from './google/urls'
 import { buildRollup, rollupMarkdown, weekStartOf } from './rollup/rollup'
-import { PROVIDERS, type ProviderId } from './llm/providers'
+import { PROVIDERS } from './llm/providers'
+import { googleHandlers } from './ipc/google'
+import { inboxHandlers } from './ipc/inbox'
+import { aiHandlers, llmStatusFor } from './ipc/ai'
+import type { Ctx, Handlers } from './ipc/types'
 
-export interface Ctx {
-  db: Db
-  dbPath: string
-  getWindow: () => BrowserWindow | null
-  getVault: () => Vault | null
-  calendar: CalendarSync
-  gmail: GmailSync
-  engine: NudgeEngine
-  assistant: Assistant
-  llm: LlmRouter
-  secrets: SecretStore
-  capture: CaptureWindow
-  /** Tray + start-at-login follow the settings. */
-  applyAppSettings: () => void
-  switchVault: (root: string) => Promise<void>
-}
+export type { Ctx } from './ipc/types'
 
-type Handlers = {
-  [C in InvokeChannel]: (
-    input: import('zod').output<(typeof contract)[C]['input']>
-  ) =>
-    | Promise<import('zod').output<(typeof contract)[C]['output']>>
-    | import('zod').output<(typeof contract)[C]['output']>
+function localSuggestions(v: Vault): Output<'entities:suggestions'> {
+  const list = v.manageList()
+  return suggestDuplicates(
+    list.map((e) => ({ category: e.category, name: e.name, aliases: e.aliases, notes: e.notes })),
+    v.currentRegistry()
+  ).map((d) => ({
+    kind: 'merge' as const,
+    category: d.category as never,
+    names: d.names,
+    to: null,
+    reason: d.reason,
+    score: d.score,
+    ambiguous: d.ambiguous
+  }))
 }
 
 function tasksFor(v: Vault, d: Omit<Dossier, 'tasks'>): TaskItem[] {
@@ -64,34 +70,56 @@ function tasksFor(v: Vault, d: Omit<Dossier, 'tasks'>): TaskItem[] {
 }
 
 /** Registers every channel in the contract. Inputs AND outputs are zod-validated. */
+
 export function registerIpc(ctx: Ctx): void {
   const vault = (): Vault => {
     const v = ctx.getVault()
     if (!v) throw new Error('Vault not ready')
     return v
   }
-  const llmStatus = (): Output<'llm:status'> => {
-    const st = ctx.llm.status()
-    const custom = getSettings().llm.models
-    return {
-      enabled: getSettings().llm.enabled,
-      canStoreKeys: ctx.secrets.canStore(),
-      providers: st.providers.map((p) => {
-        const m = PROVIDERS[p.id]
-        const over = custom[p.id] ?? {}
-        return {
-          ...p,
-          label: m.label,
-          blurb: m.blurb,
-          keyUrl: m.keyUrl,
-          paid: m.paid,
-          models: { extract: over.extract || m.models.extract, chat: over.chat || m.models.chat },
-          modelsCustom: !!(over.extract || over.chat)
-        }
-      })
+  const localDate = (): string => todayIn(getSettings().timezone)
+  const llmStatus = (): Output<'llm:status'> => llmStatusFor(ctx)
+
+  /** First line = title, the rest = body. Saved as an ad hoc note dated today. */
+  const quickNote = async (text: string): Promise<{ path: string }> => {
+    const lines = text.trim().split(/\r?\n/)
+    const title =
+      lines[0]
+        .replace(/^#+\s*/, '')
+        .trim()
+        .slice(0, 120) || 'Quick note'
+    const body = await ctx.tagger.tagOnSubmit(lines.slice(1).join('\n').trim(), { fast: true })
+    const v = vault()
+    const path = await v.createNote({ kind: 'adhoc', title, date: localDate() })
+    if (body) {
+      const { content, hash } = await v.readNote(path)
+      await v.saveNote(path, content.trimEnd() + '\n\n' + body + '\n', hash)
     }
+    return { path }
   }
+
   const handlers: Handlers = {
+    'names:review': () =>
+      reviewQueue(
+        ctx.db,
+        vault().currentRegistry(),
+        async (p) => (await vault().readNote(p)).content
+      ),
+    'names:assign': async ({ paths, short, person, category }) => {
+      const v = vault()
+      const known =
+        (ctx.db
+          .prepare(
+            "SELECT 1 FROM entities WHERE category IN ('person','customer','project','system','place') AND lower(name) = lower(?)"
+          )
+          .get(person) as unknown) !== undefined
+      // Someone or something new: add it to your lists so the name is recognised everywhere.
+      if (!known) await v.upsertRegistryEntry(category ?? 'person', person.trim(), [])
+      return v.setMention(paths, short, person.trim())
+    },
+    'names:unassign': ({ paths, short }) => vault().setMention(paths, short, null),
+    'waiting:list': () => listWaiting(ctx.db),
+    'waiting:done': async ({ path, line }) => markReceived(vault(), path, line, localDate()),
     'app:info': () => ({
       version: app.getVersion(),
       electron: process.versions.electron,
@@ -133,10 +161,30 @@ export function registerIpc(ctx: Ctx): void {
     'tasks:for-note': ({ path }) => vault().tasksForNote(path),
     'tasks:list': () => vault().listTasks(),
     'tasks:quick-add': async ({ text }) => {
-      const { path, task } = await vault().addInboxTask(text)
+      // "@Sarah send the deck" is Sarah's to do, not yours: it becomes a Waiting On note line.
+      const q = parseQuickAdd(text, new Date())
+      if (q.ownerExplicit && !ownerIsMe(q.owner, getSettings().meAliases)) {
+        if (!q.description) throw new Error('Type what they should do first.')
+        const r = await addWaiting(
+          ctx.db,
+          vault(),
+          { who: q.owner, text: q.description, due: q.due },
+          new Date()
+        )
+        return {
+          kind: 'waiting' as const,
+          path: r.path,
+          description: q.description,
+          owner: q.owner,
+          due: q.due
+        }
+      }
+      q.description = await ctx.tagger.tagOnSubmit(q.description)
+      const { path, task } = await vault().appendInboxTask(q)
       // Report what the wording told us too ("Remind Sarah to ... by Tuesday"), not just typed fields.
       const guess = vault().previewInference(task.description)
       return {
+        kind: 'task' as const,
         path,
         description: task.description,
         owner: task.ownerExplicit || task.owner !== 'Me' ? task.owner : (guess.owner ?? 'Me'),
@@ -146,6 +194,20 @@ export function registerIpc(ctx: Ctx): void {
     'tasks:set-due': ({ id, due }) => vault().setTaskDue(id, due),
     'entities:list': () => vault().listEntities(),
     'entities:vocabulary': () => vault().vocabulary() as never,
+    'tags:vocabulary': () => vault().tagVocabulary() as never,
+    'tags:suggest': ({ line }) => ctx.tagger.suggest(line),
+    'tags:tag-note': async ({ path }) => {
+      const v = vault()
+      const n = await v.readNote(path)
+      const r = ctx.tagger.tagDocument(n.content)
+      if (r.count === 0) return { count: 0, before: null }
+      await v.saveNote(path, r.text, n.hash)
+      return { count: r.count, before: n.content }
+    },
+    'tags:learn': async ({ names }) => {
+      for (const n of names) await vault().upsertRegistryEntry(n.category, n.name, [])
+      return null
+    },
     'notes:entities': ({ path }) => vault().noteEntities(path) as never,
     'entities:detail': ({ id }) => {
       const d = vault().entityDossier(id)
@@ -156,12 +218,89 @@ export function registerIpc(ctx: Ctx): void {
       await vault().upsertRegistryEntry(category, name, aliases, originalName)
       return null
     },
+    'entities:manage-list': () => vault().manageList() as never,
+    'entities:merge': async ({ category, canonical, others }) => {
+      await vault().updateRegistry((r) => mergeEntries(r, category, canonical, others))
+      return null
+    },
+    'entities:recategorize': async ({ from, to, name }) => {
+      await vault().updateRegistry((r) =>
+        from === 'topic' || from === 'event'
+          ? upsertEntry(r, to, name, [])
+          : moveEntry(r, from as RegCategory, to, name)
+      )
+      return null
+    },
+    'entities:not-same': async ({ a, b }) => {
+      await vault().updateRegistry((r) => markNotSame(r, a, b))
+      return null
+    },
+    'entities:ambiguous': async ({ name, on }) => {
+      await vault().updateRegistry((r) => setAmbiguous(r, name, on))
+      return null
+    },
+    'entities:suggestions': () => localSuggestions(vault()),
+    'entities:ai-suggest': () => ctx.assistant.suggestEntities(),
     'entities:remove': async ({ category, name }) => {
       await vault().removeRegistryEntry(category, name)
       return null
     },
-    'insights:analyze': ({ days }) => vault().insights(days),
     'notes:list': () => vault().listNotes(),
+    'notes:search': ({ query }) => searchNotePaths(ctx.db, query),
+    'app:diagnostics': () => {
+      const st = getSettings()
+      const v = ctx.getVault()
+      const cal = ctx.calendar.getStatus()
+      const mail = ctx.gmail.getStatus()
+      const llm = llmStatus()
+      return [
+        `Note Manager ${app.getVersion()} (Electron ${process.versions.electron}, Node ${process.versions.node})`,
+        `Windows ${release()} ${process.arch}`,
+        `Data folder: ${app.getPath('userData')}`,
+        `Notes folder: ${v?.root ?? '(not ready)'}`,
+        v ? `Notes: ${v.status().notes}, open tasks: ${v.status().tasksOpen}` : '',
+        `Time zone: ${st.timezone}; work hours ${st.workHours.start}-${st.workHours.end}`,
+        `Calendar: ${cal.state}, last sync ${cal.lastSyncAt ?? 'never'}${cal.error ? ', error: ' + cal.error : ''}`,
+        `Mail: ${mail.state}, ${mail.threads} threads, health ${mail.health}${mail.healthDetail ? ' (' + mail.healthDetail + ')' : ''}`,
+        `AI: ${llm.enabled ? 'on' : 'off'}; ${llm.providers.map((p) => `${p.id}=${p.state}(${p.usage.today} today)`).join(', ')}`,
+        `Nudges: ${st.nudges.enabled ? 'on' : 'off'}, toasts ${st.nudges.toasts ? 'on' : 'off'}; tray ${st.runInBackground}; login ${st.startAtLogin}`,
+        '',
+        'Recent log (no note or email content is ever logged):',
+        recentLog(40)
+      ]
+        .filter((l) => l !== '')
+        .join('\n')
+    },
+    'app:open-logs': () => {
+      const d = logDir()
+      if (d) void shell.openPath(d)
+      return null
+    },
+    'app:backup': async () => {
+      const win = ctx.getWindow()
+      const opts = {
+        title: 'Where should the backup go?',
+        properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[]
+      }
+      const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+      if (res.canceled || !res.filePaths[0]) return null
+      const root = vault().root
+      const zip = join(res.filePaths[0], `notes-backup-${localDate()}.zip`)
+      // Windows 10+ ships tar.exe, which can write .zip files: no extra software needed.
+      await new Promise<void>((ok, fail) =>
+        execFile('tar', ['-a', '-c', '-f', zip, '-C', dirname(root), basename(root)], (e) =>
+          e ? fail(new Error('Could not create the backup: ' + e.message)) : ok()
+        )
+      )
+      return { path: zip }
+    },
+    'mail:clear': () => {
+      ctx.db.exec(
+        "DELETE FROM email_threads; DELETE FROM email_actions; DELETE FROM gmail_labels; DELETE FROM chat_messages; DELETE FROM kv WHERE key LIKE 'gmail.%' OR key LIKE 'chat.%'"
+      )
+      ctx.gmail.touch()
+      return null
+    },
     'notes:entity-map': () => vault().entityMap() as never,
     'notes:read': ({ path }) => vault().readNote(path),
     'notes:save': ({ path, content, baseHash }) => vault().saveNote(path, content, baseHash),
@@ -169,6 +308,24 @@ export function registerIpc(ctx: Ctx): void {
     'notes:create': async ({ kind, title, date, account }) => ({
       path: await vault().createNote({ kind, title, date, account })
     }),
+    'notes:quick-note': ({ text }) => quickNote(text),
+    'capture:handoff': async ({ text }) => {
+      // Too long for the small box: save it, then carry on in the app with the note open.
+      const r = await quickNote(text)
+      ctx.capture.hide()
+      const w = ctx.getWindow()
+      if (w) {
+        if (w.isMinimized()) w.restore()
+        w.show()
+        w.focus()
+        w.webContents.send('app:open-note', r)
+      }
+      return r
+    },
+    'capture:resize': ({ height }) => {
+      ctx.capture.resize(height)
+      return null
+    },
     'notes:set-title': async ({ path, title }) => ({ path: await vault().setTitle(path, title) }),
     'calendar:status': () => ctx.calendar.getStatus(),
     'calendar:sync': () => ctx.calendar.sync(),
@@ -184,14 +341,23 @@ export function registerIpc(ctx: Ctx): void {
       let detail: 'ok' | 'needs-auth' | 'failed' = cached?.fetched ? 'ok' : 'failed'
       if (cached && !cacheOnly && (refresh || !cached.fetched)) {
         try {
-          const r = await scrapeEventDetail(eventId)
-          if (!r.signedIn) detail = 'needs-auth'
-          else {
-            saveDetail(ctx.db, eventId, {
-              guests: normalizeGuests(r.guests, selfEmail),
-              meetUrl: r.meetUrl
-            })
-            detail = 'ok'
+          if (ctx.google.active()) {
+            const st = await ctx.calendar.sync()
+            detail =
+              st.state === 'needs-auth'
+                ? 'needs-auth'
+                : st.state === 'error' && !cached.fetched
+                  ? 'failed'
+                  : 'ok'
+          } else {
+            // Guests arrive with every calendar sync (both sources); nothing to fetch per event.
+            const st = await ctx.calendar.sync()
+            detail =
+              st.state === 'needs-auth'
+                ? 'needs-auth'
+                : cached.fetched || st.state !== 'error'
+                  ? 'ok'
+                  : 'failed'
           }
         } catch {
           detail = cached.fetched ? 'ok' : 'failed'
@@ -205,12 +371,29 @@ export function registerIpc(ctx: Ctx): void {
       })
       if (!dossier)
         throw new Error('That meeting is no longer on your calendar. Refresh and try again.')
-      return { dossier, detail } as never
+      // Documents attached to the invite (agenda, deck, Gemini notes): one click to the original.
+      const attachments = (
+        ctx.db
+          .prepare('SELECT file_id AS fileId, title FROM event_attachments WHERE event_id = ?')
+          .all(eventId) as { fileId: string; title: string }[]
+      ).map((a) => ({
+        ...a,
+        url: `https://docs.google.com/document/d/${a.fileId}`
+      }))
+      return { dossier: { ...dossier, attachments }, detail } as never
     },
     'calendar:range': ({ from, to }) => buildRange(ctx.db, from, to, vault().listTasks()),
     'app:open-external': ({ url }) => {
-      // Only the providers' key pages (for API-key setup) and genuine Meet rooms may leave the app.
-      if (Object.values(PROVIDERS).some((p) => p.keyUrl === url)) {
+      // Only the providers' key pages (for API-key setup), Google Cloud Console, and genuine Meet rooms may leave the app.
+      if (
+        url === 'https://console.cloud.google.com/apis/credentials' ||
+        Object.values(PROVIDERS).some((p) => p.keyUrl === url)
+      ) {
+        void shell.openExternal(url)
+        return null
+      }
+      // Documents from Google Drive (attachments, Meet notes) may be opened.
+      if (isDriveDocUrl(url)) {
         void shell.openExternal(url)
         return null
       }
@@ -233,9 +416,11 @@ export function registerIpc(ctx: Ctx): void {
       ctx.engine.snooze(id, minutes ?? 60)
       return null
     },
-    'nudges:test': () => {
+    'nudges:test': async () => {
+      ctx.notifyReset()
       ctx.engine.test()
-      return null
+      await new Promise((r) => setTimeout(r, 600)) // Windows reports 'shown' / 'failed' a moment later
+      return ctx.notifyStatus()
     },
     'gmail:status': () => ctx.gmail.getStatus(),
     'gmail:sync': (arg) => ctx.gmail.sync(arg?.full ?? false),
@@ -290,27 +475,6 @@ export function registerIpc(ctx: Ctx): void {
       return null
     },
     'gmail:guess-email': ({ name }) => guessEmail(ctx.db, name),
-    'assistant:send': ({ text, mode }) => ctx.assistant.send(text, mode ?? 'auto'),
-    'assistant:history': () => ctx.assistant.history(),
-    'assistant:apply': ({ messageId, index, edits }) =>
-      ctx.assistant.apply(messageId, index, edits),
-    'assistant:dismiss': ({ messageId, index }) => ctx.assistant.dismiss(messageId, index),
-    'assistant:clear': () => {
-      ctx.assistant.clear()
-      return null
-    },
-    'llm:status': () => llmStatus(),
-    'llm:set-key': ({ provider, key }) => {
-      const k = key.trim()
-      if (!k) ctx.secrets.delete('llm.' + provider)
-      else {
-        if (k.length < 12 || /\s/.test(k))
-          throw new Error('That does not look like an API key. Paste it exactly as shown.')
-        ctx.secrets.set('llm.' + provider, k)
-      }
-      ctx.llm.resetHealth(provider)
-      return llmStatus()
-    },
     'capture:hide': () => {
       ctx.capture.hide()
       return null
@@ -320,7 +484,7 @@ export function registerIpc(ctx: Ctx): void {
       const r = buildRollup(
         ctx.db,
         vault().listTasks(),
-        arg?.weekStart ?? weekStartOf(new Date()),
+        arg?.weekStart ?? weekStartOf(wallClock(new Date(), getSettings().timezone)),
         localDate()
       )
       return { ...r, markdown: rollupMarkdown(r) }
@@ -335,67 +499,23 @@ export function registerIpc(ctx: Ctx): void {
       })
       return { path }
     },
-    'llm:configure': ({ provider, enabled, move, models }) => {
-      const cur = getSettings().llm
-      const order = orderedProviders(cur.order)
-      if (move) {
-        const i = order.indexOf(provider)
-        const j = move === 'up' ? i - 1 : i + 1
-        if (j >= 0 && j < order.length) [order[i], order[j]] = [order[j], order[i]]
-      }
-      const disabled = new Set(cur.disabled)
-      if (enabled !== undefined) {
-        if (enabled) disabled.delete(provider)
-        else disabled.add(provider)
-      }
-      const nextModels = { ...cur.models }
-      if (models) {
-        const entry = { ...(nextModels[provider] ?? {}) }
-        for (const t of ['extract', 'chat'] as const) {
-          const v = models[t].trim()
-          if (v) entry[t] = v
-          else delete entry[t]
-        }
-        if (Object.keys(entry).length) nextModels[provider] = entry
-        else delete nextModels[provider]
-      }
-      updateSettings({
-        llm: { ...cur, order: order as string[], disabled: [...disabled], models: nextModels }
-      })
-      ctx.llm.resetHealth(provider as ProviderId)
-      return llmStatus()
-    },
-    'llm:test': async ({ provider }) => {
-      try {
-        const r = await ctx.llm.generateJson({
-          tier: 'extract',
-          system: 'Reply with ONLY this JSON: {"ok": true}',
-          user: 'ping',
-          schema: z.object({ ok: z.boolean() }),
-          only: provider
-        })
-        return { ok: true, message: `Working (${r.provider}, ${r.model}).` }
-      } catch (err) {
-        return { ok: false, message: (err as Error).message }
-      }
-    },
-    'google:open-login': () => {
-      // When the sign-in window closes, pull the calendar and mail straight away.
-      openLogin(() => {
-        void ctx.calendar.sync()
-        void ctx.gmail.sync()
-      })
-      return null
-    },
     'app:set-theme': ({ mode }) => {
       nativeTheme.themeSource = mode
       return null
-    }
+    },
+    ...googleHandlers(ctx),
+    ...inboxHandlers(ctx),
+    ...aiHandlers(ctx)
   }
 
   for (const channel of Object.keys(handlers) as InvokeChannel[]) {
-    ipcMain.handle(channel, async (_event, raw): Promise<Result<unknown>> => {
+    ipcMain.handle(channel, async (event, raw): Promise<Result<unknown>> => {
       try {
+        // Only the app's own pages may call the main process (never a remote page that got loaded).
+        const from = event.senderFrame?.url ?? ''
+        const dev = process.env['ELECTRON_RENDERER_URL']
+        if (!from.startsWith('file://') && !(dev && from.startsWith(dev)))
+          throw new Error('Request refused: unexpected sender.')
         const schema = contract[channel]
         const input = schema.input.parse(raw)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

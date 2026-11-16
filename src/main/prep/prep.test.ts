@@ -21,6 +21,8 @@ const task = (over: Partial<TaskItem> = {}): TaskItem => ({
   status: 'open',
   autoOwner: false,
   autoDue: false,
+  sourceId: null,
+  sourceLabel: null,
   since: '2026-11-10',
   completedAt: null,
   notePath: 'notes/2026/x.md',

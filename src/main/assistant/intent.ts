@@ -18,17 +18,3 @@ export function classifyIntent(text: string): { intent: Intent; text: string } {
   }
   return { intent: 'capture', text: t }
 }
-
-/** Anything labelled CUI stays on this computer. */
-export const mentionsCui = (text: string): boolean =>
-  /\bCUI\b|controlled\s+unclassified|\bFOUO\b|for\s+official\s+use\s+only|\bITAR\b|\bEAR99\b/i.test(
-    text
-  )
-
-/** Strip things that should not leave the machine even for non-CUI text. */
-export function redact(text: string): string {
-  return text
-    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]')
-    .replace(/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[number]')
-    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[number]')
-}

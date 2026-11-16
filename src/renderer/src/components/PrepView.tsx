@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { PrepDossier } from '@shared/contract'
 import { ageLabel, dayLabel, fmtTime, shortDate, todayIso } from '../format'
 import { nudgeTask } from '../nudge'
-import { ArrowLeftIcon } from './Icons'
+import { ArrowLeftIcon, SparkleIcon } from './Icons'
 import { TaskRowItem } from './TasksView'
 
 type Detail = 'ok' | 'needs-auth' | 'failed'
@@ -34,6 +34,7 @@ export default function PrepView({
   eventId,
   onBack,
   onStartNotes,
+  onBrief,
   onOpenNote,
   onOpenEntity,
   onToggle,
@@ -44,6 +45,7 @@ export default function PrepView({
   eventId: string
   onBack: () => void
   onStartNotes: (eventId: string) => void
+  onBrief: (eventId: string, title: string) => void
   onOpenNote: (path: string) => void
   onOpenEntity: (id: string) => void
   onToggle: (id: string, done: boolean) => void
@@ -115,7 +117,7 @@ export default function PrepView({
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-6 py-6">
+      <div className="mx-auto max-w-4xl px-8 py-8">
         <button
           onClick={onBack}
           className="mb-3 flex items-center gap-1.5 text-sm text-muted hover:text-fg"
@@ -135,6 +137,12 @@ export default function PrepView({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => onBrief(e.id, e.title)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-field px-3 py-1.5 text-sm font-medium hover:bg-hover"
+            >
+              <SparkleIcon width={14} height={14} className="text-[var(--accent)]" /> Brief me
+            </button>
             {e.meetUrl && (
               <button
                 className="btn-primary rounded-lg px-3 py-1.5 text-sm font-semibold"
@@ -146,6 +154,16 @@ export default function PrepView({
             <button className={btn} onClick={() => onStartNotes(e.id)}>
               {e.notePath ? 'Open notes' : 'Start notes'}
             </button>
+            {(d.attachments ?? []).slice(0, 4).map((a) => (
+              <button
+                key={a.fileId}
+                className={btn}
+                title="Open the attached document in Google Drive"
+                onClick={() => void window.api.invoke('app:open-external', { url: a.url })}
+              >
+                📄 {a.title.length > 28 ? a.title.slice(0, 27) + '…' : a.title}
+              </button>
+            ))}
             <button
               className={btn}
               onClick={() => load(true)}
@@ -245,7 +263,7 @@ export default function PrepView({
               {d.series.questions.length > 0 && (
                 <>
                   <h3 className="mt-3 mb-1 text-xs font-semibold tracking-wide text-muted uppercase">
-                    Still unresolved
+                    Still Unresolved
                   </h3>
                   <ul className="list-disc pl-5 text-sm">
                     {d.series.questions.map((q) => (
@@ -261,7 +279,7 @@ export default function PrepView({
         {d.attendeeTasks.length > 0 && (
           <section className="mt-5">
             <h2 className="mb-1 px-2 text-sm font-semibold">
-              Waiting on these people{' '}
+              Waiting on These People{' '}
               <span className="font-normal text-muted">· {d.attendeeTasks.length}</span>
             </h2>
             <ul>
@@ -284,7 +302,7 @@ export default function PrepView({
         {d.series.openTasks.length > 0 && (
           <section className="mt-5">
             <h2 className="mb-1 px-2 text-sm font-semibold">
-              Open from the last meetings{' '}
+              Open From the Last Meetings{' '}
               <span className="font-normal text-muted">· {d.series.openTasks.length}</span>
             </h2>
             <ul>
@@ -307,7 +325,7 @@ export default function PrepView({
         {d.accountTasks.length > 0 && (
           <section className="mt-5">
             <h2 className="mb-1 px-2 text-sm font-semibold">
-              Your open work for {d.account}{' '}
+              Your Open Work for {d.account}{' '}
               <span className="font-normal text-muted">· {d.accountTasks.length}</span>
             </h2>
             <ul>
@@ -330,7 +348,7 @@ export default function PrepView({
         {d.emails.length > 0 && (
           <section className="mt-5 pb-10">
             <h2 className="mb-1 px-2 text-sm font-semibold">
-              Recent email <span className="font-normal text-muted">· {d.emails.length}</span>
+              Recent Email <span className="font-normal text-muted">· {d.emails.length}</span>
             </h2>
             <ul>
               {d.emails.map((m) => (

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { openDb } from '../db'
 import { applyEvents, listUpcoming, CalendarSync } from './sync'
-import type { CalEvent, RawChip } from './parse'
+import type { CalEvent } from './parse'
 
 const ev = (
   id: string,
@@ -62,10 +62,15 @@ describe('calendar store', () => {
 })
 
 describe('CalendarSync', () => {
-  const chip = (id: string): RawChip => ({
+  const ev = (id: string): CalEvent => ({
     id,
-    datekey: 29037,
-    lines: ['9 – 10am', 'Sync ' + id, 'Me, Accepted']
+    date: '2026-11-13',
+    startTime: '09:00',
+    endTime: '10:00',
+    allDay: false,
+    title: 'Sync ' + id,
+    status: 'accepted',
+    kind: 'meeting'
   })
 
   it('syncs, reports needs-auth without touching data, recovers, and shares concurrent runs', async () => {
@@ -77,7 +82,13 @@ describe('CalendarSync', () => {
       db,
       async () => {
         calls++
-        return { signedIn, chips: [chip('a'), chip('a'), chip('b')] }
+        return {
+          signedIn,
+          events: [ev('a'), ev('a'), ev('b')],
+          details: [],
+          owner: null,
+          selfEmail: null
+        }
       },
       (st) => states.push(st.state)
     )

@@ -1,7 +1,16 @@
 import { promises as fs, existsSync } from 'node:fs'
+import { ambiguousNames } from '../entities/review'
+import { TOPIC_STOP } from '../../shared/autotag'
 import { join, relative, sep } from 'node:path'
 import type { Db } from '../db'
-import { appendLine, ensureIdentity, setFrontmatterTitle, setTaskChecked, setTaskDue } from './edit'
+import {
+  appendLine,
+  ensureIdentity,
+  setFrontmatterMention,
+  setFrontmatterTitle,
+  setTaskChecked,
+  setTaskDue
+} from './edit'
 import { atomicWrite, patchFile, readText, TMP_SUFFIX } from './fsio'
 import { sha256, ulid } from './ids'
 import { indexNote, noteIdPath, removeFromIndex, taskOwnerElsewhere } from './indexer'
@@ -11,6 +20,7 @@ import {
   emptyRegistry,
   listOf,
   parseRegistry,
+  REG_CATEGORIES,
   REGISTRY_REL,
   removeEntry,
   serializeRegistry,
@@ -55,6 +65,9 @@ export interface TaskRow {
   status: 'open' | 'completed'
   autoOwner: boolean
   autoDue: boolean
+  /** The insight this task came from (to reopen the source), and how to name it. */
+  sourceId: string | null
+  sourceLabel: string | null
 }
 
 export interface TaskItem {
@@ -68,6 +81,9 @@ export interface TaskItem {
   status: 'open' | 'completed'
   autoOwner: boolean
   autoDue: boolean
+  /** The insight this task came from (to reopen the source), and how to name it. */
+  sourceId: string | null
+  sourceLabel: string | null
   /** When we started waiting: the earlier of the note date and first-seen date. */
   since: string
   completedAt: string | null
@@ -205,7 +221,7 @@ export class Vault {
       const regPeople = new Set(reg.people.map((p) => p.name.toLowerCase()))
       const dbRows = this.db
         .prepare(
-          "SELECT name, category FROM entities WHERE in_registry = 0 AND category IN ('person','customer','system')"
+          "SELECT name, category FROM entities WHERE in_registry = 0 AND category IN ('person','customer','system','project','place')"
         )
         .all() as unknown as { name: string; category: RegCategory }[]
       const people = new Map<string, { name: string; aliases?: string[] }>()
@@ -236,7 +252,7 @@ export class Vault {
       }
       this.matcherCache = {
         key,
-        matcher: buildMatcher(reg, this.meAliases(), seeds),
+        matcher: buildMatcher(reg, this.meAliases(), seeds, this.sharedNames(reg)),
         people: personIndex
       }
     }
@@ -314,6 +330,30 @@ export class Vault {
     return this.saveRegistry(upsertEntry(this.registry, category, name, aliases, originalName))
   }
 
+  /** Change the curated registry (merge, recategorise, mark different...) and re-scan every note. */
+  updateRegistry(fn: (reg: Registry) => Registry): Promise<void> {
+    return this.saveRegistry(fn(this.registry))
+  }
+
+  /** Everything the Manage screen shows: counts plus nicknames and the "ambiguous" flag. */
+  manageList(): (EntitySummary & { aliases: string[]; ambiguous: boolean })[] {
+    const reg = this.registry
+    const amb = new Set(reg.ambiguous.map((a) => a.toLowerCase()))
+    return this.listEntities().map((e) => {
+      const entry = (REG_CATEGORIES as string[]).includes(e.category)
+        ? listOf(reg, e.category as RegCategory).find(
+            (x) => x.name.toLowerCase() === e.name.toLowerCase()
+          )
+        : undefined
+      return { ...e, aliases: entry?.aliases ?? [], ambiguous: amb.has(e.name.toLowerCase()) }
+    })
+  }
+
+  /** Read-only copy of the registry (for suggestions). */
+  currentRegistry(): Registry {
+    return this.registry
+  }
+
   removeRegistryEntry(category: RegCategory, name: string): Promise<void> {
     return this.saveRegistry(removeEntry(this.registry, category, name))
   }
@@ -338,7 +378,7 @@ export class Vault {
     const { matcher } = this.tagging()
     const out: { id: string; name: string; category: string; terms: string[]; exact: boolean }[] =
       []
-    for (const c of ['person', 'customer', 'system'] as RegCategory[]) {
+    for (const c of REG_CATEGORIES) {
       for (const e of listOf(this.registry, c)) {
         out.push({
           id: `${c}:${e.name.toLowerCase()}`,
@@ -368,6 +408,81 @@ export class Vault {
       grouped.set(key, g)
     }
     return [...out, ...grouped.values()].slice(0, 3000)
+  }
+
+  /**
+   * Short names shared by several people ("Jacob") that nobody has claimed: an explicit alias or
+   * full name in your lists always wins, so only unclaimed shared names are treated as ambiguous.
+   */
+  private sharedNames(reg: Registry): string[] {
+    const claimed = new Set<string>()
+    for (const c of REG_CATEGORIES)
+      for (const e of listOf(reg, c))
+        for (const t of [e.name, ...e.aliases]) claimed.add(t.toLowerCase())
+    return [...ambiguousNames(this.db, reg).keys()].filter((n) => !claimed.has(n.toLowerCase()))
+  }
+
+  /** Changes whenever your lists change (so a name you just added is tagged at once). */
+  registryRevision(): number {
+    return this.registryVersion
+  }
+
+  /**
+   * What can be auto-tagging: your lists and discovered people, plus every topic you have used.
+   * A name shared by two people ("Jacob") or marked ambiguous is included but flagged for review:
+   * it is tagged, and waits in Review Names until you say which one. Left out: your own names and
+   * everyday words.
+   */
+  tagVocabulary(): {
+    id: string
+    name: string
+    category: string
+    terms: string[]
+    exact: boolean
+    review?: boolean
+  }[] {
+    const { matcher } = this.tagging()
+    const ambiguous = new Set(this.registry.ambiguous.map((a) => a.toLowerCase()))
+    const isMe = (t: string): boolean => matcher.me.has(t.toLowerCase())
+    const blocked = (t: string): boolean => isMe(t) || ambiguous.has(t.toLowerCase())
+    const out: ReturnType<Vault['tagVocabulary']> = this.vocabulary()
+      .map((e) => ({ ...e, terms: e.terms.filter((t) => !blocked(t)) }))
+      .filter((e) => e.terms.length > 0)
+    const cands = ambiguousNames(this.db, this.registry)
+    const shared = new Set<string>(this.sharedNames(this.registry))
+    for (const a of this.registry.ambiguous) shared.add(a)
+    for (const name of shared) {
+      if (isMe(name) || name.trim().length < 2) continue
+      // Its kind is the most used one among the things it could be (a person when nobody is known).
+      const c = [...(cands.get(name) ?? [])].sort((a, b) => b.notes - a.notes)[0]
+      out.push({
+        id: `review:${name.toLowerCase()}`,
+        name,
+        category: c?.category ?? 'person',
+        terms: [name],
+        exact: false,
+        review: true
+      })
+    }
+    const topics = this.db
+      .prepare(
+        `SELECT e.name AS name, count(ne.note_id) AS n FROM entities e
+           JOIN note_entities ne ON ne.entity_id = e.id
+          WHERE e.category = 'topic' GROUP BY e.id HAVING n >= 1 ORDER BY n DESC LIMIT 800`
+      )
+      .all() as unknown as { name: string }[]
+    for (const t of topics) {
+      const name = t.name.trim()
+      if (!name || TOPIC_STOP.has(name.toLowerCase()) || blocked(name)) continue
+      out.push({
+        id: `topic:${name.toLowerCase()}`,
+        name,
+        category: 'topic',
+        terms: [name],
+        exact: false
+      })
+    }
+    return out
   }
 
   /** The customer/account a meeting title refers to, by registry names/aliases and known accounts. */
@@ -610,6 +725,21 @@ export class Vault {
    * placeholder "untitled" slug, renames the file to match. The note id never changes, so
    * tasks and links survive. Returns the (possibly new) vault-relative path.
    */
+  /** Say who a short name ("Jacob") means in these notes; null forgets it (undo). */
+  async setMention(rels: string[], short: string, full: string | null): Promise<number> {
+    let n = 0
+    for (const rel of rels) {
+      this.assertInVault(rel)
+      await this.serial(rel, () =>
+        patchFile(this.abs(rel), (c) => setFrontmatterMention(c, short, full))
+      )
+      await this.processFile(rel)
+      n++
+    }
+    this.onChanged(rels)
+    return n
+  }
+
   async setTitle(rel: string, rawTitle: string): Promise<string> {
     this.assertInVault(rel)
     const title = rawTitle.trim().slice(0, 120)
@@ -639,6 +769,7 @@ export class Vault {
         `SELECT t.id, t.description, t.owner, t.is_mine AS isMine, t.due_date AS due, t.priority,
                 t.est_minutes AS estMinutes, t.status, t.completed_at AS completedAt,
                 t.auto_owner AS autoOwner, t.auto_due AS autoDue,
+                t.source_id AS sourceId, t.source_label AS sourceLabel,
                 CASE WHEN n.type = 'inbox' THEN date(t.assigned_at, 'localtime')
                      ELSE MIN(n.date, date(t.assigned_at, 'localtime')) END AS since,
                 n.file_path AS notePath, n.title AS noteTitle, n.account
@@ -716,7 +847,8 @@ export class Vault {
     const rows = this.db
       .prepare(
         `SELECT t.id, t.description, t.owner, t.is_mine AS isMine, t.due_date AS due, t.priority,
-                t.est_minutes AS estMinutes, t.status, t.auto_owner AS autoOwner, t.auto_due AS autoDue
+                t.est_minutes AS estMinutes, t.status, t.auto_owner AS autoOwner, t.auto_due AS autoDue,
+                t.source_id AS sourceId, t.source_label AS sourceLabel
            FROM tasks t JOIN notes n ON n.id = t.note_id WHERE n.file_path = ?
           ORDER BY t.rowid`
       )

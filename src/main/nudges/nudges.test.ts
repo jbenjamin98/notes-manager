@@ -25,6 +25,8 @@ const task = (over: Partial<TaskItem> = {}): TaskItem => ({
   status: 'open',
   autoOwner: false,
   autoDue: false,
+  sourceId: null,
+  sourceLabel: null,
   since: '2026-11-12',
   completedAt: null,
   notePath: 'notes/2026/x.md',
@@ -374,6 +376,17 @@ describe('engine feed', () => {
     expect(on.shouldToast(FRI(23, 0))).toBe(false)
     expect(on.shouldToast(SAT)).toBe(false)
     expect(setup({ set: settings({ toasts: false }) }).engine.shouldToast(FRI(9, 0))).toBe(false)
+  })
+
+  it('can notify after hours and on weekends when the user allows it', () => {
+    const off = setup().engine
+    expect(off.shouldToast(FRI(23, 0))).toBe(false)
+    const on = setup({ set: settings({ afterHours: true }) }).engine
+    expect(on.shouldToast(FRI(23, 0))).toBe(true)
+    expect(on.shouldToast(SAT)).toBe(true)
+    expect(
+      setup({ set: settings({ afterHours: true, toasts: false }) }).engine.shouldToast(FRI(9, 0))
+    ).toBe(false)
   })
 
   it('has a test notification that goes through the same delivery path', () => {

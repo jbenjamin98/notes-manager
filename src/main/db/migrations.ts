@@ -243,5 +243,150 @@ DELETE FROM file_state;              -- re-index once so inference runs on exist
 -- Guests and Meet link are fetched on demand (the agenda doesn't show them) and cached here.
 ALTER TABLE calendar_events ADD COLUMN detail_at TEXT;
 `
+  },
+  {
+    version: 7,
+    name: 'meet-artifacts-and-chat',
+    sql: `
+-- Gemini "Notes by Gemini" / transcripts that Meet saved to Drive (read through the Google APIs).
+CREATE TABLE meet_artifacts (
+  file_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('notes','transcript')),
+  created_at TEXT NOT NULL,
+  event_id TEXT,                       -- calendar event it was matched to, if any
+  note_path TEXT,                      -- vault note it was written into, if any
+  fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Recent Google Chat messages (metadata + a short excerpt), for follow-ups and prep.
+CREATE TABLE chat_messages (
+  id TEXT PRIMARY KEY,
+  space TEXT NOT NULL,
+  space_name TEXT NOT NULL,
+  space_type TEXT NOT NULL,
+  sender TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_chat_created ON chat_messages(created_at);
+`
+  },
+  {
+    version: 8,
+    name: 'entity-categories-project-place',
+    sql: `
+-- Entities are derived from the notes and registry, so the table can simply be rebuilt with the wider
+-- category list (SQLite cannot change a CHECK in place). Everything is re-extracted on the next scan.
+DROP TABLE note_entities;
+DROP TABLE entities;
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL CHECK (category IN ('person','customer','system','project','place','event','topic')),
+  in_registry INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE note_entities (
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  mention_count INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'deterministic' CHECK (source IN ('deterministic','llm')),
+  PRIMARY KEY (note_id, entity_id)
+);
+CREATE UNIQUE INDEX idx_entities_lname ON entities(lower(name));
+CREATE INDEX idx_note_entities_entity ON note_entities(entity_id);
+DELETE FROM file_state;
+`
+  },
+  {
+    version: 9,
+    name: 'chat-triage-and-feature-usage',
+    sql: `
+-- Chat messages carry what triage needs (who, which thread, was I mentioned, did I write it).
+ALTER TABLE chat_messages ADD COLUMN thread TEXT;
+ALTER TABLE chat_messages ADD COLUMN sender_id TEXT;
+ALTER TABLE chat_messages ADD COLUMN from_me INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chat_messages ADD COLUMN mentions_me INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chat_messages ADD COLUMN has_question INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chat_messages ADD COLUMN source TEXT;
+CREATE INDEX idx_chat_thread ON chat_messages(space, thread);
+
+-- Which spaces to follow closely. mode: auto (DMs and group chats track, spaces mentions-only), track, mentions, ignore.
+CREATE TABLE chat_spaces (
+  space TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto','track','mentions','ignore')),
+  last_at TEXT
+);
+
+-- "Relevant / not relevant" answers teach the triage weights (kept local and inspectable).
+CREATE TABLE chat_feedback (
+  conv_key TEXT PRIMARY KEY,
+  relevant INTEGER NOT NULL,
+  reasons TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE chat_weights (
+  feature TEXT PRIMARY KEY,
+  weight REAL NOT NULL
+);
+
+-- Where AI tokens go: per feature.
+ALTER TABLE llm_usage ADD COLUMN feature TEXT;
+`
+  },
+  {
+    version: 10,
+    name: 'event-attachments',
+    sql: `
+-- Documents attached to calendar events (Gemini meeting notes): an exact link from file to meeting.
+CREATE TABLE event_attachments (
+  event_id TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY (event_id, file_id)
+);
+`
+  },
+  {
+    version: 11,
+    name: 'insights',
+    sql: `
+-- What matters from meetings, email and chat (actions, decisions, risks...), each with a reference
+-- back to its source. The raw messages are only a short working set; these stay.
+CREATE TABLE insights (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('action','ask','promise','decision','question','risk','change','fact')),
+  text TEXT NOT NULL,
+  owner TEXT,
+  due TEXT,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','accepted','dismissed')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('meeting','email','chat','note')),
+  source_ref TEXT NOT NULL DEFAULT '{}',
+  source_label TEXT NOT NULL DEFAULT '',
+  source_snippet TEXT NOT NULL DEFAULT '',
+  source_at TEXT,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_insights_status ON insights(status, created_at);
+CREATE TABLE insight_entities (
+  insight_id TEXT NOT NULL REFERENCES insights(id) ON DELETE CASCADE,
+  entity_name TEXT NOT NULL,
+  PRIMARY KEY (insight_id, entity_name)
+);
+CREATE INDEX idx_insight_entities_name ON insight_entities(entity_name);
+-- Which source texts have been read already (a hash), so unchanged ones are never read twice.
+CREATE TABLE insight_runs (
+  source_key TEXT PRIMARY KEY,
+  hash TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+-- A task made from an insight remembers where it came from.
+ALTER TABLE tasks ADD COLUMN source_id TEXT;
+ALTER TABLE tasks ADD COLUMN source_label TEXT;
+`
   }
 ]

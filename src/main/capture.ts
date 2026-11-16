@@ -13,6 +13,8 @@ export interface CaptureSettings {
 }
 
 const IDLE_DESTROY_MS = 10 * 60_000
+const BASE_HEIGHT = 172
+const MAX_HEIGHT = 340
 
 export class CaptureWindow {
   private win: BrowserWindow | null = null
@@ -26,6 +28,8 @@ export class CaptureWindow {
       getSettings: () => CaptureSettings
       /** Show the in-app Co-Pilot / main window afterwards, if wanted. */
       onSubmitted?: () => void
+      /** Tests only: do not hide when another window takes focus. */
+      keepOnBlur?: boolean
     }
   ) {}
 
@@ -63,6 +67,15 @@ export class CaptureWindow {
     this.win?.hide()
   }
 
+  /** Grow or shrink with the text, keeping the top edge where it is. */
+  resize(height: number): void {
+    const w = this.win
+    if (!w || w.isDestroyed()) return
+    const h = Math.max(BASE_HEIGHT, Math.min(MAX_HEIGHT, Math.round(height)))
+    const b = w.getBounds()
+    if (Math.abs(b.height - h) > 2) w.setBounds({ ...b, height: h })
+  }
+
   toggle(): void {
     if (this.win?.isVisible()) return this.hide()
     this.show()
@@ -71,7 +84,7 @@ export class CaptureWindow {
   private create(): BrowserWindow {
     const w = new BrowserWindow({
       width: 560,
-      height: 150,
+      height: BASE_HEIGHT,
       show: false,
       frame: false,
       resizable: false,
@@ -87,7 +100,8 @@ export class CaptureWindow {
         nodeIntegration: false
       }
     })
-    w.on('blur', () => w.hide()) // click anywhere else and it goes away
+    // Click anywhere else and it goes away (test runs keep it up so it can be driven and captured).
+    if (!this.deps.keepOnBlur) w.on('blur', () => w.hide())
     w.on('hide', () => this.armIdle())
     w.on('closed', () => {
       if (this.win === w) this.win = null
@@ -120,7 +134,12 @@ export class CaptureWindow {
       const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
       const { x, y, width } = d.workArea
       const [ww] = w.getSize()
-      w.setPosition(Math.round(x + (width - ww) / 2), Math.round(y + 140))
+      w.setBounds({
+        x: Math.round(x + (width - ww) / 2),
+        y: Math.round(y + 140),
+        width: ww,
+        height: BASE_HEIGHT
+      })
       w.show()
       w.focus()
       w.webContents.send('capture:shown', null)

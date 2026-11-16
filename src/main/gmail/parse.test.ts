@@ -6,7 +6,6 @@ import {
   isUserLabel,
   normalizeRows,
   parseGmailTime,
-  selfEmailFromTitle,
   suggestTaskText,
   type RawRow
 } from './parse'
@@ -31,13 +30,6 @@ describe('gmail parsing', () => {
     expect(parseGmailTime('Mon, Jan 5, 2026, 12:05 PM')).toBe('2026-01-05T12:05')
     expect(parseGmailTime('Tue, Dec 1, 2026, 11:59 PM')).toBe('2026-12-01T23:59')
     expect(parseGmailTime('yesterday')).toBeNull()
-  })
-
-  it('finds your own address from the page title', () => {
-    expect(selfEmailFromTitle('Inbox (4) - Jacob.Benjamin@appian.com - Appian Mail')).toBe(
-      'jacob.benjamin@appian.com'
-    )
-    expect(selfEmailFromTitle('Gmail')).toBeNull()
   })
 
   it('keeps only user labels, once; prefers the legacy id; strips snippet dash', () => {

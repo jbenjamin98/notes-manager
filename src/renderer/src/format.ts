@@ -1,11 +1,22 @@
-export const todayIso = (d = new Date()): string => d.toLocaleDateString('en-CA')
+import { todayIn, wallClock } from '@shared/tz'
+
+/** The zone from Settings; "today" and the clock follow it, not the computer. */
+let zone: string | undefined
+export const setAppTimezone = (z?: string): void => {
+  zone = z
+}
+export const wall = (d: Date = new Date()): Date => wallClock(d, zone)
+const localIso = (d: Date): string => d.toLocaleDateString('en-CA')
+
+/** Today (or the given instant's date) in the Settings time zone. */
+export const todayIso = (d = new Date()): string => todayIn(zone, d)
 
 const parse = (iso: string): Date => new Date(`${iso}T12:00:00`)
 
 export function addDays(iso: string, n: number): string {
   const d = parse(iso)
   d.setDate(d.getDate() + n)
-  return todayIso(d)
+  return localIso(d)
 }
 
 /** "9:30 AM" from "09:30". */

@@ -15,7 +15,3 @@ export function composeUrl(p: { to?: string; subject: string; body: string }): s
   const q = (k: string, v: string): string => `&${k}=${encodeURIComponent(v)}`
   return `${BASE}?view=cm&fs=1&tf=1${p.to ? q('to', p.to) : ''}${q('su', p.subject)}${q('body', p.body)}`
 }
-
-/** Hash for page `n` of a search (Gmail paginates searches with a "/pN" suffix). */
-export const pageHash = (q: string, n: number): string =>
-  `#search/${encodeURIComponent(q)}${n > 1 ? `/p${n}` : ''}`

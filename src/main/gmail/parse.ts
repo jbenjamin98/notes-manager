@@ -1,7 +1,7 @@
 /**
  * Pure helpers for scraped Gmail rows. The scraper hands over raw row data from the standard
  * UI; everything that decides what it MEANS lives here so it can be tested without a browser.
- * Only metadata is handled (subject, sender, labels, time): never message bodies.
+ * Only metadata is handled here (subject, sender, labels, time). Thread text is read elsewhere, in memory.
  */
 
 export interface RawRow {
@@ -82,9 +82,6 @@ export function parseGmailTime(title: string): string | null {
 }
 
 /** Your address, from the page title: "Inbox (4) - you@example.com - Mail". */
-export function selfEmailFromTitle(title: string): string | null {
-  return /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/.exec(title)?.[0]?.toLowerCase() ?? null
-}
 
 /** User labels only, trimmed, de-duplicated case-insensitively (Gmail label names are). */
 export function uniqueLabels(labels: string[]): string[] {

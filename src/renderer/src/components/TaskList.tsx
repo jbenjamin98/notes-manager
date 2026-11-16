@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import SourceChip from './SourceChip'
 import type { TaskRow } from '@shared/contract'
 import { shortDate, todayIso } from '../format'
 import { ChevronIcon } from './Icons'
@@ -11,10 +12,12 @@ const PRIORITY_DOT: Record<string, string> = {
 
 export default function TaskList({
   tasks,
-  onToggle
+  onToggle,
+  onOpenNote
 }: {
   tasks: TaskRow[]
   onToggle: (id: string, done: boolean) => void
+  onOpenNote?: (path: string) => void
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(true)
   if (tasks.length === 0) return null
@@ -22,17 +25,20 @@ export default function TaskList({
   const openCount = tasks.filter((t) => t.status === 'open').length
 
   return (
-    <section className="border-b border-line bg-surface" aria-label="Tasks in this note">
+    <section
+      className="mx-6 mb-3 rounded-xl border border-line bg-surface"
+      aria-label="Tasks in this note"
+    >
       <button
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-1.5 px-6 py-2 text-left text-xs font-medium text-muted hover:text-fg"
+        className="flex w-full items-center gap-1.5 rounded-xl px-4 py-2 text-left text-xs font-medium text-muted hover:text-fg"
         aria-expanded={open}
       >
         <ChevronIcon width={14} height={14} className={open ? '' : '-rotate-90'} />
         Tasks · {openCount} open
       </button>
       {open && (
-        <ul className="px-6 pb-3">
+        <ul className="px-4 pb-2.5">
           {tasks.map((t) => {
             const done = t.status === 'completed'
             const overdue = !done && t.due !== null && t.due < today
@@ -51,6 +57,9 @@ export default function TaskList({
                 >
                   {t.description}
                 </span>
+                {t.sourceId && t.sourceLabel && (
+                  <SourceChip id={t.sourceId} label={t.sourceLabel} onOpenNote={onOpenNote} />
+                )}
                 {!t.isMine && (
                   <span
                     className="rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent"

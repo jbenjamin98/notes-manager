@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- for a DARK taskbar: no background, white ribbon, green check, gold sparkle -->
+  <path d="M250 60 H730 a44 44 0 0 1 44 44 V984 L490 760 L206 984 V104 a44 44 0 0 1 44 -44 Z" fill="#ffffff"/>
+  <path d="M326 440 L446 560 L650 310" fill="none" stroke="#16a34a" stroke-width="124" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M800 30 Q800 230 1000 230 Q800 230 800 430 Q800 230 600 230 Q800 230 800 30 Z" fill="#ffd84a"/>
+</svg>

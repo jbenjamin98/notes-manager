@@ -92,6 +92,45 @@ export function setFrontmatterTitle(content: string, title: string): string {
   return lines.join('')
 }
 
+/** Who a short name means in this note: frontmatter `mentions: {"Jacob": "Jacob Anderson"}`. */
+export function readMentions(data: Record<string, unknown>): Record<string, string> {
+  const m = data.mentions
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return {}
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(m as Record<string, unknown>))
+    if (typeof v === 'string' && k.trim() && v.trim()) out[k.trim()] = v.trim()
+  return out
+}
+
+/**
+ * Set (or with `full` null, remove) which person a short name means in this note. Kept in the
+ * note's own frontmatter so it travels with the file (Drive) and survives a rebuild of the index.
+ */
+export function setFrontmatterMention(content: string, short: string, full: string | null): string {
+  const eol = eolOf(content)
+  const lines = splitLines(content)
+  const fm = parseFrontmatter(lines)
+  if (!fm) return content
+  const map = readMentions(fm.data)
+  if (full) map[short] = full
+  else delete map[short]
+  // Drop the old `mentions:` (inline or a block of indented lines), then write one inline line.
+  let start = -1
+  let end = -1
+  for (let i = 1; i < fm.endLine; i++) {
+    if (/^mentions\s*:/.test(lines[i])) {
+      start = i
+      end = i + 1
+      while (end < fm.endLine && /^\s+\S/.test(lines[end])) end++
+      break
+    }
+  }
+  const line = Object.keys(map).length ? [`mentions: ${JSON.stringify(map)}${eol}`] : []
+  if (start >= 0) lines.splice(start, end - start, ...line)
+  else lines.splice(fm.endLine, 0, ...line)
+  return lines.join('')
+}
+
 /**
  * Set or clear a task's `due:` field, located by ^id. Only that line changes; its other
  * fields are preserved (spacing around ` | ` is normalised). Null if the task isn't found.

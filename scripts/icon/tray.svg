@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#ff9a6c"/>
+      <stop offset="0.5" stop-color="#f0527a"/>
+      <stop offset="1" stop-color="#8b3df0"/>
+    </linearGradient>
+  </defs>
+  <!-- small sizes: full-size squircle, bigger ribbon, thicker check, one bold sparkle -->
+  <rect x="8" y="8" width="1008" height="1008" rx="250" fill="url(#bg)"/>
+  <path d="M270 150 H690 a44 44 0 0 1 44 44 V890 L480 696 L226 890 V194 a44 44 0 0 1 44 -44 Z" fill="#ffffff"/>
+  <path d="M340 450 L440 550 L620 340" fill="none" stroke="#16a34a" stroke-width="108" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M780 70 Q780 240 950 240 Q780 240 780 410 Q780 240 610 240 Q780 240 780 70 Z" fill="#ffd84a" stroke="#f0527a" stroke-width="20" stroke-linejoin="round" paint-order="stroke"/>
+</svg>

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Db } from '../db'
+import { wallClock } from '../../shared/tz'
 import type { TaskItem } from '../vault/vault'
 import type { GmailOverview } from '../gmail/sync'
 import {
@@ -15,12 +16,16 @@ import {
 export interface NudgeSettings {
   enabled: boolean
   toasts: boolean
+  /** Also pop up Windows notifications outside work hours and on weekends. */
+  afterHours?: boolean
   /** Per-rule switches; a missing rule is ON. */
   rules: Record<string, boolean>
   eodTime: string
 }
 
 export interface EngineSettings {
+  /** IANA zone the work day is measured in. Missing = the computer's clock (used by tests). */
+  timezone?: string
   nudges: NudgeSettings
   workHours: { start: string; end: string }
   defaultTaskMinutes: number
@@ -62,7 +67,7 @@ export interface EngineDeps {
   getTasks: () => TaskItem[]
   getMail: () => GmailOverview | null
   /** Called with nudges created by a tick (for toasts and UI refresh). */
-  onNew?: (n: Nudge[]) => void
+  onNew?: (n: Nudge[], opts?: { force?: boolean }) => void
   onChanged?: () => void
 }
 
@@ -97,8 +102,9 @@ export class NudgeEngine {
    * resume from sleep, after a calendar sync): each candidate is stored under a unique key, so only
    * genuinely new ones come back.
    */
-  tick(now: Date = new Date()): Nudge[] {
-    const created: Nudge[] = this.promoteReminders(now)
+  tick(real: Date = new Date()): Nudge[] {
+    const now = wallClock(real, this.deps.getSettings().timezone)
+    const created: Nudge[] = this.promoteReminders(real)
     if (!this.deps.getSettings().nudges.enabled) {
       if (created.length) {
         this.deps.onNew?.(created)
@@ -128,7 +134,7 @@ export class NudgeEngine {
           c.title,
           c.body,
           JSON.stringify(c.actions),
-          now.toISOString()
+          real.toISOString()
         )
         if (Number(r.changes) > 0) {
           created.push({
@@ -138,7 +144,7 @@ export class NudgeEngine {
             body: c.body,
             actions: c.actions,
             status: 'new',
-            createdAt: now.toISOString()
+            createdAt: real.toISOString()
           })
         }
       }
@@ -249,7 +255,7 @@ export class NudgeEngine {
         `INSERT INTO nudges (id, dedupe_key, rule, title, body, payload_json, status, created_at) VALUES (?,?,?,?,?,?, 'new', ?)`
       )
       .run(n.id, `test:${n.id}`, n.rule, n.title, n.body, '[]', n.createdAt)
-    this.deps.onNew?.([n])
+    this.deps.onNew?.([n], { force: true }) // a test must always try, whatever the hour
     this.deps.onChanged?.()
     return n
   }
@@ -266,10 +272,15 @@ export class NudgeEngine {
     this.timer = null
   }
 
+  /** Time-critical nudges notify at any hour; the rest wait for work hours unless the user allows after-hours. */
+  static readonly ALWAYS: string[] = ['prep', 'reminder', 'assistant']
+
   /** Whether a toast should pop up now: weekday, inside work hours (the feed always gets it). */
-  shouldToast(now: Date = new Date()): boolean {
+  shouldToast(real: Date = new Date()): boolean {
     const s = this.deps.getSettings()
+    const now = wallClock(real, s.timezone)
     if (!s.nudges.toasts) return false
+    if (s.nudges.afterHours) return true
     const m = now.getHours() * 60 + now.getMinutes()
     return (
       isWeekday(now) &&

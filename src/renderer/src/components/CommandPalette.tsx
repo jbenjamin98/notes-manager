@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFocusTrap } from '../useFocusTrap'
 import type { EntitySummary, NoteSummary, TaskItem } from '@shared/contract'
 
 export interface PaletteAction {
@@ -10,7 +11,7 @@ export interface PaletteAction {
 
 interface Item {
   key: string
-  group: 'Actions' | 'Notes' | 'Tasks' | 'People & accounts'
+  group: 'Actions' | 'Notes' | 'Tasks' | 'People & accounts' | 'Inside notes'
   label: string
   hint: string
   run: () => void
@@ -28,7 +29,7 @@ function score(label: string, words: string[]): number {
   return s
 }
 
-const GROUPS: Item['group'][] = ['Actions', 'Notes', 'Tasks', 'People & accounts']
+const GROUPS: Item['group'][] = ['Actions', 'Notes', 'Tasks', 'People & accounts', 'Inside notes']
 
 export default function CommandPalette({
   actions,
@@ -49,7 +50,23 @@ export default function CommandPalette({
 }): React.JSX.Element {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
+  // Notes whose text (not just title) contains every word typed.
+  const [bodyPaths, setBodyPaths] = useState<string[]>([])
+  useEffect(() => {
+    if (q.trim().length < 3) {
+      const clear = setTimeout(() => setBodyPaths([]), 0)
+      return () => clearTimeout(clear)
+    }
+    const t = setTimeout(() => {
+      void window.api
+        .invoke('notes:search', { query: q })
+        .then((r) => setBodyPaths(r.ok ? r.data : []))
+    }, 180)
+    return () => clearTimeout(t)
+  }, [q])
   const listRef = useRef<HTMLUListElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  useFocusTrap(dialog, onClose)
 
   const items = useMemo((): Item[] => {
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
@@ -90,7 +107,23 @@ export default function CommandPalette({
           run: () => onOpenEntity(e.id)
         })
     }
+    if (words.length) {
+      const titled = new Set(all.filter((x) => x.group === 'Notes').map((x) => x.key))
+      for (const p of bodyPaths) {
+        const n = notes.find((x) => x.path === p)
+        if (!n || n.isConflict || titled.has('n:' + p)) continue
+        all.push({
+          key: 'b:' + p,
+          group: 'Inside notes',
+          label: n.title,
+          hint: 'mentions "' + q.trim() + '" · ' + n.date,
+          run: done(() => onOpenNote(p)),
+          s: 0
+        })
+      }
+    }
     const cap: Record<Item['group'], number> = {
+      'Inside notes': 6,
       Actions: 8,
       Notes: 6,
       Tasks: 6,
@@ -105,7 +138,7 @@ export default function CommandPalette({
           .slice(0, cap[g])
       )
     return out
-  }, [q, actions, notes, tasks, entities, onOpenNote, onOpenEntity, onClose])
+  }, [q, actions, notes, tasks, entities, bodyPaths, onOpenNote, onOpenEntity, onClose])
 
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' })
@@ -133,9 +166,11 @@ export default function CommandPalette({
       onMouseDown={onClose}
     >
       <div
+        ref={dialog}
         role="dialog"
+        aria-modal="true"
         aria-label="Command palette"
-        className="glass w-[34rem] max-w-[92vw] overflow-hidden rounded-2xl"
+        className="glass spring-in w-[34rem] max-w-[92vw] overflow-hidden rounded-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <input
@@ -160,7 +195,7 @@ export default function CommandPalette({
             return (
               <li key={it.key} role="presentation">
                 {header && (
-                  <div className="px-3 pt-2 pb-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  <div className="px-3 pt-2 pb-1 text-xs font-semibold tracking-wide text-muted uppercase">
                     {it.group}
                   </div>
                 )}
@@ -178,7 +213,7 @@ export default function CommandPalette({
             )
           })}
         </ul>
-        <div className="border-t border-line px-4 py-1.5 text-[11px] text-muted">
+        <div className="border-t border-line px-4 py-1.5 text-xs text-muted">
           ↑↓ to move · Enter to open · Esc to close
         </div>
       </div>

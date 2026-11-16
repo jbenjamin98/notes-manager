@@ -19,7 +19,7 @@ export default class ErrorBoundary extends Component<
     if (!this.state.error) return this.props.children
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 p-8 text-center text-fg">
-        <h1 className="text-xl font-semibold">Something went wrong</h1>
+        <h1 className="text-xl font-semibold">Something Went Wrong</h1>
         <p className="max-w-md text-sm text-muted">
           Your notes are safe: they are files in your notes folder and nothing here changes them.
           Reload to carry on.

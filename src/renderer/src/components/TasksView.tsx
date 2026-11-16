@@ -1,4 +1,7 @@
 import { useMemo, useState } from 'react'
+import WaitingView from './WaitingView'
+import { useWaiting } from '../hooks'
+import SourceChip from './SourceChip'
 import type { TaskItem } from '@shared/contract'
 import { parseQuickAdd } from '@shared/quickadd'
 import { shortDate, todayIso } from '../format'
@@ -150,6 +153,12 @@ function DueChip({
   )
 }
 
+const SPARK_COLORS = ['#6a63f0', '#f472b6', '#38bdf8', '#34d399', '#fbbf24', '#fb923c']
+const SPARKS = Array.from({ length: 8 }, (_, i) => {
+  const a = (Math.PI * 2 * i) / 8
+  return { dx: Math.cos(a) * 16, dy: Math.sin(a) * 16, c: SPARK_COLORS[i % SPARK_COLORS.length] }
+})
+
 function Row({
   task,
   today,
@@ -167,6 +176,7 @@ function Row({
   onSetDue: (id: string, due: string | null) => void
   onNudge: (t: TaskItem) => void
 }): React.JSX.Element {
+  const [burst, setBurst] = useState(0)
   const done = task.status === 'completed'
   const days = daysSince(task.since, today)
   const waitTone =
@@ -178,17 +188,42 @@ function Row({
 
   return (
     <li className="group flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-hover">
-      <input
-        type="checkbox"
-        checked={done}
-        onChange={(e) => onToggle(task.id, e.target.checked)}
-        aria-label={`Mark "${task.description}" ${done ? 'not done' : 'done'}`}
-        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--accent)]"
-      />
+      <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+        <input
+          type="checkbox"
+          checked={done}
+          onChange={(e) => {
+            if (e.target.checked) setBurst((n) => n + 1)
+            onToggle(task.id, e.target.checked)
+          }}
+          aria-label={`Mark "${task.description}" ${done ? 'not done' : 'done'}`}
+          className="h-4 w-4 cursor-pointer accent-[var(--accent)]"
+        />
+        {burst > 0 && done && (
+          <span className="burst" key={burst} aria-hidden>
+            {SPARKS.map((s, i) => (
+              <i
+                key={i}
+                style={
+                  { '--dx': `${s.dx}px`, '--dy': `${s.dy}px`, '--c': s.c } as React.CSSProperties
+                }
+              />
+            ))}
+          </span>
+        )}
+      </span>
       <div className="min-w-0 flex-1">
-        <div className={`truncate text-sm ${done ? 'text-muted line-through' : ''}`}>
+        <div className={`task-text truncate text-sm ${done ? 'text-muted line-through' : ''}`}>
           {task.description}
         </div>
+        {task.sourceId && task.sourceLabel && (
+          <SourceChip
+            id={task.sourceId}
+            label={task.sourceLabel}
+            onOpenNote={onOpenNote}
+            className="mr-2 mb-0.5"
+          />
+        )}
         <button
           onClick={() => onOpenNote(task.notePath)}
           className="max-w-full truncate text-left text-xs text-muted hover:text-accent hover:underline"
@@ -241,7 +276,8 @@ const EMPTY: Record<string, string> = {
   mine: 'Nothing on your plate. Add a task above, or write one in a note.',
   today: 'Nothing due today.',
   overdue: 'Nothing overdue. Nice.',
-  waiting: 'You are not waiting on anyone. Tasks assigned to others (@name) show up here.',
+  waiting:
+    'You are not waiting on anyone. When someone else owns an action (@Sarah …), it is saved here as a note.',
   done: 'Completed tasks from the last 30 days appear here.'
 }
 
@@ -270,6 +306,7 @@ export default function TasksView({
   }, [shown, filter, today])
 
   const nudge = (t: TaskItem): Promise<void> => nudgeTask(t, today, onFlash)
+  const waitingCount = useWaiting().items.length
 
   return (
     <div className="flex h-full flex-col">
@@ -282,20 +319,37 @@ export default function TasksView({
       {filter !== 'done' && <QuickAdd filter={filter} onFlash={onFlash} />}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10">
-        {groups.length === 0 ? (
+        {filter === 'waiting' && <WaitingView onOpenNote={onOpenNote} onFlash={onFlash} />}
+        {filter === 'waiting' && groups.length > 0 && (
+          <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
+            Older Assigned Lines in Your Notes
+          </p>
+        )}
+        {groups.length === 0 && filter === 'waiting' && waitingCount > 0 ? null : groups.length ===
+          0 ? (
           <p className="px-4 py-10 text-center text-sm text-muted">
             {EMPTY[filter] ?? 'No open tasks for this account.'}
           </p>
         ) : (
           groups.map(([label, list]) => (
-            <section key={label || 'all'} className="mb-4">
+            <section
+              key={label || 'all'}
+              className={`card-modern mb-4 overflow-hidden p-2 ${label === 'Overdue' ? 'ring-1 ring-danger/25' : ''}`}
+            >
               {label && (
                 <h2
-                  className={`px-2 pb-1 text-[11px] font-semibold tracking-wide uppercase ${
+                  className={`flex items-center gap-2 px-2 pt-1 pb-1.5 text-[11px] font-semibold tracking-[0.12em] uppercase ${
                     label === 'Overdue' ? 'text-danger' : 'text-muted'
                   }`}
                 >
-                  {label} <span className="font-normal">· {list.length}</span>
+                  <span
+                    aria-hidden
+                    className={`h-1.5 w-1.5 rounded-full ${label === 'Overdue' ? 'bg-danger' : label === 'Today' ? 'bg-accent' : 'bg-muted'}`}
+                  />
+                  {label}
+                  <span className="ml-auto rounded-full bg-hover px-1.5 font-semibold tabular-nums">
+                    {list.length}
+                  </span>
                 </h2>
               )}
               <ul>

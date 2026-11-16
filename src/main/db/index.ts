@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
+import { copyFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { MIGRATIONS } from './migrations'
 
 export type Db = DatabaseSync
@@ -18,8 +20,35 @@ export function openDb(file: string): Db {
     PRAGMA cache_size = -8000;
     PRAGMA mmap_size = 0;
   `)
+  if (file !== ':memory:') backupBeforeMigrate(db, file)
   migrate(db)
   return db
+}
+
+/**
+ * Before upgrading an existing database, keep a copy (the last 3). The search index can be rebuilt
+ * from the notes, but settings-like data (feedback, history, saved insights) cannot.
+ * Never blocks startup: a failed backup is skipped.
+ */
+export function backupBeforeMigrate(db: Db, file: string, keep = 3): string | null {
+  try {
+    const current = schemaVersion(db)
+    const latest = MIGRATIONS[MIGRATIONS.length - 1].version
+    if (current === 0 || current >= latest || !existsSync(file)) return null
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    const copy = `${file}.pre-v${current}.bak`
+    copyFileSync(file, copy)
+    const dir = dirname(file)
+    const prefix = basename(file) + '.pre-v'
+    const old = readdirSync(dir)
+      .filter((n) => n.startsWith(prefix) && n.endsWith('.bak'))
+      .map((n) => ({ n, t: statSync(join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+    for (const o of old.slice(keep)) unlinkSync(join(dir, o.n))
+    return copy
+  } catch {
+    return null
+  }
 }
 
 export function schemaVersion(db: Db): number {

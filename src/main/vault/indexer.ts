@@ -1,5 +1,6 @@
 import type { Db } from '../db'
 import { parseNote } from './parse'
+import { readMentions } from './edit'
 import { sha256 } from './ids'
 import { extractEntities } from '../entities/extract'
 import { inferDue, inferOwner, type PersonIndex } from '../entities/infer'
@@ -86,7 +87,7 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
       noteDateIso,
       account,
       eventId,
-      parsed.llmBlocked ? 1 : 0,
+      0,
       parsed.body
     )
 
@@ -101,12 +102,13 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
       ).map((r) => [r.id, r])
     )
     const upsert = db.prepare(
-      `INSERT INTO tasks (id,note_id,line_hash,description,owner,is_mine,due_date,priority,est_minutes,status,completed_at,auto_owner,auto_due)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO tasks (id,note_id,line_hash,description,owner,is_mine,due_date,priority,est_minutes,status,completed_at,auto_owner,auto_due,source_id,source_label)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET line_hash=excluded.line_hash,description=excluded.description,
          owner=excluded.owner,is_mine=excluded.is_mine,due_date=excluded.due_date,priority=excluded.priority,
          est_minutes=excluded.est_minutes,status=excluded.status,completed_at=excluded.completed_at,
-         auto_owner=excluded.auto_owner,auto_due=excluded.auto_due`
+         auto_owner=excluded.auto_owner,auto_due=excluded.auto_due,
+         source_id=excluded.source_id,source_label=excluded.source_label`
     )
     const firstSeenDone = new Date(
       Math.min(Date.now(), new Date(`${noteDateIso}T12:00:00`).getTime())
@@ -158,7 +160,9 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
         status,
         completedAt,
         autoOwner,
-        autoDue
+        autoDue,
+        t.sourceId,
+        t.sourceLabel
       )
     }
     for (const id of existing.keys()) {
@@ -169,7 +173,10 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
     replaceNoteEntities(
       db,
       noteId,
-      extractEntities({ title, body: parsed.body, attendees, account }, input.matcher)
+      extractEntities(
+        { title, body: applyMentions(parsed.body, readMentions(fm)), attendees, account },
+        input.matcher
+      )
     )
 
     db.prepare('DELETE FROM note_chunks WHERE note_id = ?').run(noteId)
@@ -192,4 +199,21 @@ export function removeFromIndex(db: Db, relPath: string): void {
   db.prepare('DELETE FROM notes WHERE file_path = ?').run(relPath)
   db.prepare('DELETE FROM file_state WHERE path = ?').run(relPath)
   pruneOrphans(db)
+}
+
+const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * A note can say who a short name means (`mentions: {"Jacob": "Jacob Anderson"}`, set from Review
+ * People). For finding people only, the bare short name is read as the full name; the note's text
+ * is never changed. A short name already followed by a capitalised surname is left alone.
+ */
+export function applyMentions(body: string, mentions: Record<string, string>): string {
+  let out = body
+  for (const [short, full] of Object.entries(mentions))
+    out = out.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}_])${escRe(short)}(?![\\p{L}\\p{N}_]|\\s+\\p{Lu})`, 'gu'),
+      full
+    )
+  return out
 }

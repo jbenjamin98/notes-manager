@@ -4,3 +4,16 @@ out
 .DS_Store
 .eslintcache
 *.log*
+
+# local-only
+.env
+.env.*
+secrets.json
+scratch-*.mjs
+*.tmp
+coverage
+.vscode-test
+e2e/out
+
+# The company Google sign-in client (see docs/IT-GOOGLE-SIGN-IN.md)
+build/google-client.json

@@ -66,6 +66,22 @@ describe('entity extraction', () => {
     expect(r.some((e) => e.name.toLowerCase() === 'sarah')).toBe(false)
   })
 
+  it('reads "@Sarah Chen" as the one person, and "@Acme"-style tags as the registry entry', () => {
+    const r = extractEntities(
+      {
+        title: 'Tags',
+        body: 'Tell @Sarah Chen about #cats and #cats again. Ping @Navy NextMRO.',
+        attendees: [],
+        account: null
+      },
+      m
+    )
+    expect(get(r, 'Sarah Chen')?.count).toBe(1)
+    expect(r.some((e) => e.name.toLowerCase() === 'sarah')).toBe(false)
+    expect(get(r, 'Navy NextMRO')).toMatchObject({ category: 'customer', count: 1 })
+    expect(get(r, 'cats')).toMatchObject({ category: 'topic', count: 2 })
+  })
+
   it('discovers unknown @mentions, ignores me, resolves attendees and accounts', () => {
     const r = extractEntities(
       {
@@ -83,11 +99,11 @@ describe('entity extraction', () => {
     expect(get(r, 'Acme')).toMatchObject({ category: 'customer', inRegistry: false })
   })
 
-  it('finds #tags as topics (not markdown headings, not #cui)', () => {
+  it('finds #tags as topics (not markdown headings)', () => {
     const r = extractEntities(
       {
         title: 't',
-        body: '# Heading\nTalked about #Latency and #rate-limits. Classified #cui.',
+        body: '# Heading\nTalked about #Latency and #rate-limits.',
         attendees: [],
         account: null
       },

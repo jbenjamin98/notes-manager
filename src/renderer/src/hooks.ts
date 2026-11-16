@@ -4,9 +4,11 @@ import type {
   EntitySummary,
   GmailOverview,
   GmailStatus,
+  GoogleConnection,
   NoteSummary,
   TaskItem,
-  UpcomingEvent
+  UpcomingEvent,
+  Output
 } from '@shared/contract'
 
 export interface AppData {
@@ -16,6 +18,7 @@ export interface AppData {
   gmail: GmailStatus
   mail: GmailOverview | null
   unreadNudges: number
+  assistantUnread: number
   upcoming: UpcomingEvent[]
   cal: CalendarStatus
   refreshNotes: () => Promise<void>
@@ -40,6 +43,7 @@ export function useAppData(): AppData {
   })
   const [mail, setMail] = useState<GmailOverview | null>(null)
   const [unreadNudges, setUnreadNudges] = useState(0)
+  const [assistantUnread, setAssistantUnread] = useState(0)
   const [upcoming, setUpcoming] = useState<UpcomingEvent[]>([])
   const [cal, setCal] = useState<CalendarStatus>({ state: 'idle', lastSyncAt: null, error: null })
 
@@ -84,6 +88,12 @@ export function useAppData(): AppData {
     })
     void window.api.invoke('nudges:unread').then((r) => alive && r.ok && setUnreadNudges(r.data))
     const offNudges = window.api.on('nudges:changed', ({ unread }) => setUnreadNudges(unread))
+    void window.api
+      .invoke('assistant:unread')
+      .then((r) => alive && r.ok && setAssistantUnread(r.data))
+    const offAssistant = window.api.on('assistant:changed', ({ unread }) =>
+      setAssistantUnread(unread)
+    )
     const offCal = window.api.on('calendar:changed', (st) => {
       setCal(st)
       loadUpcoming()
@@ -94,10 +104,22 @@ export function useAppData(): AppData {
       offCal()
       offGmail()
       offNudges()
+      offAssistant()
     }
   }, [])
 
-  return { notes, tasks, entities, gmail, mail, unreadNudges, upcoming, cal, refreshNotes }
+  return {
+    notes,
+    tasks,
+    entities,
+    gmail,
+    mail,
+    unreadNudges,
+    assistantUnread,
+    upcoming,
+    cal,
+    refreshNotes
+  }
 }
 
 /** Re-render every `ms` (for "synced 3m ago" and past-meeting dimming). */
@@ -108,4 +130,49 @@ export function useNow(ms = 60_000): number {
     return () => clearInterval(t)
   }, [ms])
   return now
+}
+
+/**
+ * The one Google connection state (main computes it), kept live. The sidebar, Settings, Home and
+ * the first-run guide all read this, so they always agree.
+ */
+export function useGoogleConnection(): GoogleConnection | null {
+  const [conn, setConn] = useState<GoogleConnection | null>(null)
+  useEffect(() => {
+    let alive = true
+    const load = (): void => {
+      void window.api.invoke('google:connection').then((r) => alive && r.ok && setConn(r.data))
+    }
+    load()
+    const offs = [
+      window.api.on('google:changed', (c) => alive && setConn(c)),
+      window.api.on('calendar:changed', load),
+      window.api.on('gmail:changed', load),
+      window.api.on('settings:changed', load)
+    ]
+    return () => {
+      alive = false
+      offs.forEach((o) => o())
+    }
+  }, [])
+  return conn
+}
+
+export type WaitingItem = Output<'waiting:list'>[number]
+
+/** What other people owe you: Waiting On note lines from your notes, kept live. */
+export function useWaiting(): { items: WaitingItem[]; reload: () => void } {
+  const [items, setItems] = useState<WaitingItem[]>([])
+  const reload = useCallback(() => {
+    void window.api.invoke('waiting:list').then((r) => r.ok && setItems(r.data))
+  }, [])
+  useEffect(() => {
+    const first = setTimeout(reload, 0)
+    const off = window.api.on('vault:changed', reload)
+    return () => {
+      clearTimeout(first)
+      off()
+    }
+  }, [reload])
+  return { items, reload }
 }

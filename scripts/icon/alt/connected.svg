@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#7c6cff"/>
+      <stop offset="0.55" stop-color="#5b3fe0"/>
+      <stop offset="1" stop-color="#3a1fa8"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0.25" cy="0.12" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mint" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#5eead4"/>
+    </linearGradient>
+  </defs>
+  <rect x="56" y="56" width="912" height="912" rx="236" fill="url(#bg)"/>
+  <rect x="56" y="56" width="912" height="912" rx="236" fill="url(#shine)"/>
+  <!-- a check made of linked points: tasks, and the connections between things -->
+  <path d="M296 548 L452 704 L740 336" fill="none" stroke="#ffffff" stroke-opacity="0.92" stroke-width="84" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="296" cy="548" r="88" fill="#ffffff"/>
+  <circle cx="452" cy="704" r="88" fill="#ffffff"/>
+  <circle cx="740" cy="336" r="122" fill="url(#mint)"/>
+  <circle cx="740" cy="336" r="122" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="14"/>
+  <circle cx="768" cy="300" r="26" fill="#ffffff" fill-opacity="0.55"/>
+</svg>

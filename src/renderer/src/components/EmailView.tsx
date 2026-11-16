@@ -163,10 +163,10 @@ export default function EmailView({
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-6 py-6">
+      <div className="mx-auto max-w-3xl px-8 py-8">
         <header className="mb-4 flex items-end gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Email follow-ups</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Email Follow-Ups</h1>
             <p className="mt-1 text-xs text-muted">
               {never
                 ? 'Not synced yet.'

@@ -4,10 +4,10 @@ import { addDays, dayLabel, shortDate } from './format'
 export type TaskFilter = 'mine' | 'today' | 'overdue' | 'waiting' | 'done' | `account:${string}`
 
 export const FILTER_TITLE: Record<Exclude<TaskFilter, `account:${string}`>, string> = {
-  mine: 'My tasks',
-  today: 'Due today',
+  mine: 'My Tasks',
+  today: 'Due Today',
   overdue: 'Overdue',
-  waiting: 'Waiting on others',
+  waiting: 'Waiting On',
   done: 'Completed'
 }
 

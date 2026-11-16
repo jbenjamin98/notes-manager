@@ -53,7 +53,9 @@ export type CaptureOut = z.infer<typeof CaptureOut>
 export const AskOut = z.object({
   answer: z.string(),
   /** Snippet numbers the answer relies on. */
-  cited: z.array(z.number()).default([])
+  cited: z.array(z.number()).default([]),
+  /** Short questions the user might ask next (only requested in Heavy mode). */
+  followups: z.array(z.string()).default([])
 })
 export type AskOut = z.infer<typeof AskOut>
 
@@ -248,6 +250,15 @@ export function mergeEdits(
   if (p.kind === 'note') {
     return { ...p, title: str(edits.title) ? clean(str(edits.title)!).slice(0, 120) : p.title }
   }
+  if (p.kind === 'email') {
+    const to = str(edits.to)?.trim()
+    return {
+      ...p,
+      subject: str(edits.subject) ? clean(str(edits.subject)!).slice(0, 200) : p.subject,
+      body: typeof edits.body === 'string' ? edits.body.slice(0, 4000) : p.body,
+      ...(to !== undefined ? { to: to || null } : {})
+    }
+  }
   const at = str(edits.at)
   return {
     ...p,
@@ -284,8 +295,27 @@ export function captureSystemPrompt(ctx: ResolveCtx, tz: string): string {
     .join('\n')
 }
 
-export const ASK_SYSTEM_PROMPT = [
-  'You answer questions about the user\'s own meeting notes. Reply with ONLY a JSON object: {"answer": string, "cited": [numbers]}.',
-  'Use ONLY the numbered snippets provided. Cite them inline like [1] and list the numbers you used in "cited".',
-  'If the snippets do not contain the answer, say you could not find it in the notes. Never guess. Keep it short.'
-].join('\n')
+/** How long an answer should be, by AI mode. */
+export const ANSWER_LENGTH: Record<string, string> = {
+  light: '2 to 4 sentences',
+  normal: 'about 80 to 180 words; use short bullets for lists of 3 or more things',
+  heavy:
+    'as long as the question deserves, up to about 350 words, with bullets and short headings when it helps'
+}
+
+export const askSystemPrompt = (followups: boolean, mode = 'normal'): string =>
+  [
+    'You are the user\'s work assistant. You know their meeting notes, their own open tasks, their calendar, what other people owe them ("Waiting on"), and insights pulled from their meetings, email and chat. These arrive as numbered sources.',
+    `Reply with ONLY a JSON object: {"answer": string, "cited": [numbers]${followups ? ', "followups": [up to 3 short questions the user might ask next]' : ''}}.`,
+    'How to answer:',
+    '- Lead with the direct answer in the first sentence. No preamble, no restating the question.',
+    '- Then give the details that make it useful: who, what, when, the current status, and what is still open. Connect related sources (a decision in one meeting and the task it created in another).',
+    '- Cite sources inline like [2] right after the fact they support, and list every number you used in "cited".',
+    '- If the sources only partly answer, say what you found and name the gap plainly ("I can see X, but nothing about Y yet").',
+    '- When something needs doing, end with one concrete suggested next step.',
+    '- Use ONLY the sources. Never invent names, dates or numbers. Write dates like "Mon Nov 17", not ISO.',
+    '- If nothing in the sources is relevant, say so in one sentence and suggest a better question or where it might be.',
+    `Length: ${ANSWER_LENGTH[mode] ?? ANSWER_LENGTH.normal}.`
+  ].join('\n')
+
+export const ASK_SYSTEM_PROMPT = askSystemPrompt(false)

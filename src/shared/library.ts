@@ -8,7 +8,7 @@ export const LIBRARY_VIEWS: { id: LibraryView; label: string; hint: string }[] =
   { id: 'weeks', label: 'Weeks', hint: 'One section per week' },
   { id: 'meetings', label: 'Meetings', hint: 'Recurring meetings grouped together' },
   { id: 'subjects', label: 'Accounts', hint: 'By customer or project' },
-  { id: 'people', label: 'People & things', hint: 'By who or what is mentioned' },
+  { id: 'people', label: 'People', hint: 'By who or what is mentioned' },
   { id: 'tasks', label: 'Open tasks', hint: 'Notes that still need action' }
 ]
 
@@ -37,6 +37,8 @@ export interface LibOptions {
   /** For the people view: 'all' or one category. */
   category?: string
   now?: Date
+  /** Paths of notes whose body text matched the query (found by full-text search). */
+  extraPaths?: Set<string>
 }
 
 const p2 = (n: number): string => String(n).padStart(2, '0')
@@ -71,6 +73,7 @@ function filter(notes: LibNote[], o: LibOptions): LibNote[] {
     if (n.type === 'inbox') return false // the inbox holds loose tasks; they live on the Tasks page
     if (o.type && o.type !== 'all' && n.type !== o.type) return false
     if (!q) return true
+    if (o.extraPaths?.has(n.path)) return true
     return (
       n.title.toLowerCase().includes(q) ||
       (n.account ?? '').toLowerCase().includes(q) ||

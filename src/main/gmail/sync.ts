@@ -8,6 +8,7 @@ import {
 } from './parse'
 import {
   classify,
+  isPersonThread,
   normalizeMute,
   type DropReason,
   type KeepReason,
@@ -27,11 +28,21 @@ export interface GmailScrape {
   pages: number
   /** True if the crawl reached the cutoff date; false if it stopped at the page cap. */
   reachedCutoff: boolean
+  /** Gmail's history position after this read (sources that support incremental reads). */
+  historyId?: string | null
+  /** The source could not continue from our history position: do a full read instead. */
+  resync?: boolean
+  /** Google slowed us down part way: these rows are what was read so far (keep them, finish later). */
+  rateLimited?: boolean
+  /** Only what changed since `sinceHistoryId` was returned (an empty list is normal). */
+  incremental?: boolean
 }
 
 export interface CrawlOptions {
   days: number
   maxPages: number
+  /** Read only what changed since this history position (when the source supports it). */
+  sinceHistoryId?: string | null
 }
 
 export type GmailState = 'idle' | 'syncing' | 'needs-auth' | 'error'
@@ -333,6 +344,7 @@ export function overview(
       (r) =>
         r.inInbox &&
         !r.lastIsMe &&
+        isPersonThread(r) &&
         labelsOf(r).length === 0 &&
         ['inbox', 'mine'].includes(reasonOf.get(r.id) ?? '') &&
         r.lastMessageAt &&
@@ -450,11 +462,11 @@ function coverage(rows: RawRow[], f: (r: RawRow) => boolean): number {
 
 /** Did the crawl return rows with the fields we rely on? Catches Gmail layout changes early. */
 export function assessHealth(s: GmailScrape): { health: 'ok' | 'degraded'; detail: string | null } {
+  if (s.incremental && s.rows.length === 0) return { health: 'ok', detail: null } // nothing changed
   if (s.rows.length === 0 && s.starred.length === 0) {
     return {
       health: 'degraded',
-      detail:
-        'No mail rows were found. Gmail may have changed its layout, or the page did not load.'
+      detail: 'No mail was returned. Check the Google connection in Settings.'
     }
   }
   const named: [string, RawRow[]][] = [
@@ -492,6 +504,7 @@ export class GmailSync {
   private status: GmailStatus
   private inflight: Promise<GmailStatus> | null = null
   private timer: NodeJS.Timeout | null = null
+  private retry: NodeJS.Timeout | null = null
 
   constructor(
     private db: Db,
@@ -531,9 +544,30 @@ export class GmailSync {
   /** Full crawl of the window every few hours (refreshes read/unread); quick recent-days crawl otherwise. */
   private plan(force: boolean): { full: boolean; opts: CrawlOptions } {
     const lastFullAt = Number(kvGet(this.db, 'gmail.lastFullAt') ?? 0)
-    const full = force || Date.now() - lastFullAt > FULL_EVERY_MS || this.status.threads === 0
+    // After Google slowed us down, only small "what changed" reads until the pause is over:
+    // starting the whole crawl again is what kept the limit from ever clearing.
+    const pausedUntil = Number(kvGet(this.db, 'gmail.fullPausedUntil') ?? 0)
+    const paused = Date.now() < pausedUntil && this.status.threads > 0
+    const full =
+      !paused && (force || Date.now() - lastFullAt > FULL_EVERY_MS || this.status.threads === 0)
     const days = full ? this.windowDays() : INCREMENTAL_DAYS
-    return { full, opts: { days, maxPages: full ? Math.min(80, days * 2 + 10) : 8 } }
+    return {
+      full,
+      opts: {
+        days,
+        maxPages: full ? Math.min(80, days * 3 + 10) : 8,
+        sinceHistoryId: full ? null : kvGet(this.db, 'gmail.historyId')
+      }
+    }
+  }
+
+  /** Stop big reads for a while (longer each time in a row); returns how long to wait. */
+  private pauseFull(): number {
+    const n = Number(kvGet(this.db, 'gmail.backoffN') ?? 0)
+    const wait = [2, 5, 10, 20, 40][Math.min(n, 4)] * 60_000
+    kvSet(this.db, 'gmail.backoffN', String(n + 1))
+    kvSet(this.db, 'gmail.fullPausedUntil', String(Date.now() + wait))
+    return wait
   }
 
   sync(force = false): Promise<GmailStatus> {
@@ -542,19 +576,33 @@ export class GmailSync {
     this.set({ state: 'syncing', error: null })
     this.inflight = (async () => {
       try {
-        const { full, opts } = this.plan(force)
-        const res = await this.scrape(opts)
+        let { full, opts } = this.plan(force)
+        let res = await this.scrape(opts)
+        if (res.resync) {
+          // The source lost our place in the mailbox history: read the whole window again.
+          this.db.prepare("DELETE FROM kv WHERE key = 'gmail.historyId'").run()
+          ;({ full, opts } = this.plan(true))
+          res = await this.scrape(opts)
+        }
         if (!res.signedIn) {
           this.set({ state: 'needs-auth' })
           return this.status
         }
         const h = assessHealth(res)
         const self = res.selfEmail
-        applyThreads(this.db, normalizeRows(res.rows, self), normalizeRows(res.starred, self))
+        // A part-way read still updates what it saw, but must not clear stars it never got to.
+        applyThreads(
+          this.db,
+          normalizeRows(res.rows, self),
+          res.rateLimited ? [] : normalizeRows(res.starred, self)
+        )
         const now = new Date().toISOString()
+        if (res.rateLimited) this.pauseFull()
+        else kvSet(this.db, 'gmail.backoffN', '0')
         kvSet(this.db, 'gmail.lastSyncAt', now)
         if (full && res.reachedCutoff) kvSet(this.db, 'gmail.lastFullAt', String(Date.now()))
         if (self) kvSet(this.db, 'gmail.selfEmail', self)
+        if (res.historyId) kvSet(this.db, 'gmail.historyId', res.historyId)
         kvSet(this.db, 'gmail.lastRead', String(res.rows.length))
         kvSet(this.db, 'gmail.lastPages', String(res.pages))
         kvSet(this.db, 'gmail.partial', res.reachedCutoff ? '0' : '1')
@@ -566,14 +614,29 @@ export class GmailSync {
             this.db.prepare('SELECT count(*) AS c FROM email_threads').get() as { c: number }
           ).c,
           health: h.health,
-          healthDetail: h.detail,
+          healthDetail: res.rateLimited
+            ? 'Google is limiting mail reads, so part of your mail was read. The rest follows automatically.'
+            : h.detail,
           lastRead: res.rows.length,
           lastPages: res.pages,
           partial: !res.reachedCutoff,
           lastFull: full
         })
       } catch (err) {
-        this.set({ state: 'error', error: (err as Error).message })
+        const msg = (err as Error).message
+        this.set({ state: 'error', error: msg })
+        // Google asked us to slow down: pause the big read, and try a small one a little later,
+        // waiting longer each time (2, 5, 10, 20 minutes) so the limit can clear.
+        if (/try again in a minute|limiting how fast/i.test(msg) && !this.retry) {
+          const wait = this.pauseFull()
+          this.retry = setTimeout(
+            () => {
+              this.retry = null
+              void this.sync()
+            },
+            Math.min(wait, 20 * 60_000)
+          )
+        }
       } finally {
         this.inflight = null
       }

@@ -1,5 +1,4 @@
 import type { Db } from '../db'
-import { mentionsCui } from './intent'
 
 export interface Hit {
   /** 1-based citation number used in prompts ("[1]"). */
@@ -10,8 +9,6 @@ export interface Hit {
   date: string
   heading: string | null
   text: string
-  /** Note is marked CUI: may be shown locally, never sent to an LLM. */
-  blocked: boolean
 }
 
 const STOP = new Set(
@@ -36,7 +33,7 @@ export function ftsQuery(question: string): string | null {
 }
 
 /** Top chunks from the user's notes for a question: full-text search, conflict copies excluded. */
-export function retrieve(db: Db, question: string, k = 5): Hit[] {
+export function retrieve(db: Db, question: string, k = 5, chars = 700): Hit[] {
   const q = ftsQuery(question)
   if (!q) return []
   let rows: {
@@ -46,12 +43,11 @@ export function retrieve(db: Db, question: string, k = 5): Hit[] {
     date: string
     heading: string | null
     text: string
-    blocked: number
   }[]
   try {
     rows = db
       .prepare(
-        `SELECT c.id, n.file_path AS path, n.title, n.date, c.heading, c.text, n.llm_blocked AS blocked
+        `SELECT c.id, n.file_path AS path, n.title, n.date, c.heading, c.text
            FROM chunks_fts f
            JOIN note_chunks c ON c.id = f.rowid
            JOIN notes n ON n.id = c.note_id
@@ -76,11 +72,31 @@ export function retrieve(db: Db, question: string, k = 5): Hit[] {
       title: r.title,
       date: r.date,
       heading: r.heading,
-      text: r.text.length > 700 ? r.text.slice(0, 697) + '…' : r.text,
-      // Tagged notes are blocked as a whole; any snippet that says CUI is blocked even in an untagged note.
-      blocked: !!r.blocked || mentionsCui(r.text) || mentionsCui(r.title)
+      text: r.text.length > chars ? r.text.slice(0, chars - 3) + '…' : r.text
     })
     if (hits.length >= k) break
   }
   return hits
+}
+
+/** Paths of notes whose text contains ALL the typed words (for the All notes filter). */
+export function searchNotePaths(db: Db, query: string, limit = 300): string[] {
+  const words = [
+    ...new Set(query.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]{1,}/gu) ?? [])
+  ].slice(0, 8)
+  if (words.length === 0) return []
+  const q = words.map((w) => `"${w.replace(/"/g, '')}"`).join(' AND ')
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT DISTINCT n.file_path AS path FROM chunks_fts f
+             JOIN note_chunks c ON c.id = f.rowid JOIN notes n ON n.id = c.note_id
+            WHERE chunks_fts MATCH ? AND n.type <> 'inbox' LIMIT ?`
+        )
+        .all(q, limit) as { path: string }[]
+    ).map((r) => r.path)
+  } catch {
+    return []
+  }
 }

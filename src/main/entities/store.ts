@@ -1,6 +1,6 @@
 import type { Db } from '../db'
 import type { EntityCategory, ExtractedEntity } from './extract'
-import { listOf, type RegCategory, type Registry } from './registry'
+import { listOf, REG_CATEGORIES, type RegCategory, type Registry } from './registry'
 
 /** SQL fragment excluding Google Drive conflict copies from analytics (they'd double-count). */
 const NOT_CONFLICT = `n.file_path NOT LIKE '% (%).md' AND lower(n.file_path) NOT LIKE '%conflict%'`
@@ -61,7 +61,7 @@ export function syncRegistryRows(db: Db, reg: Registry): void {
   db.exec('BEGIN')
   try {
     db.exec('UPDATE entities SET in_registry = 0')
-    for (const c of ['person', 'customer', 'system'] as RegCategory[]) {
+    for (const c of REG_CATEGORIES) {
       for (const e of listOf(reg, c)) upsertEntityRow(db, c, e.name, true)
     }
     pruneOrphans(db)

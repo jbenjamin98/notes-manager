@@ -1,8 +1,10 @@
 import type { Db } from '../db'
+import { listWaiting } from '../waiting/waiting'
 import type { TaskItem } from '../vault/vault'
 import type { GmailOverview } from '../gmail/sync'
 import { buildRollup, weekStartOf } from '../rollup/rollup'
 import { seriesKey } from '../../shared/series'
+import { triage, topicMatcher } from '../chat/triage'
 
 /**
  * Deterministic proactive rules. Each rule is a pure function of "now" and local data: it decides
@@ -11,7 +13,7 @@ import { seriesKey } from '../../shared/series'
  */
 
 export type RuleId =
-  'brief' | 'prep' | 'empty-note' | 'overload' | 'followup' | 'blocker' | 'eod' | 'rollup'
+  'brief' | 'prep' | 'empty-note' | 'overload' | 'followup' | 'blocker' | 'eod' | 'rollup' | 'chat'
 
 export const RULES: { id: RuleId; label: string; description: string }[] = [
   { id: 'brief', label: 'Morning brief', description: 'Your day at a glance when work starts.' },
@@ -46,6 +48,11 @@ export const RULES: { id: RuleId; label: string; description: string }[] = [
     description: 'On Friday afternoon: meetings, finished work and what is still open.'
   },
   {
+    id: 'chat',
+    label: 'Chat needs you',
+    description: 'Someone asked you something in Chat and it has been waiting for hours.'
+  },
+  {
     id: 'eod',
     label: 'End of day',
     description: 'What is still open today, and what collides tomorrow.'
@@ -58,6 +65,7 @@ export type NudgeAction =
   | { type: 'open-note'; path: string; label: string }
   | { type: 'open-tasks'; filter: string; label: string }
   | { type: 'open-email'; label: string }
+  | { type: 'open-chat'; label: string }
   | { type: 'open-rollup'; label: string }
 
 export interface Candidate {
@@ -388,6 +396,22 @@ export function followUpRadar(env: Env): Candidate[] {
       age: late ? 100 + age : age
     })
   }
+  // Waiting On note lines: what people owe you, kept as notes rather than tasks.
+  let waiting: ReturnType<typeof listWaiting>
+  try {
+    waiting = listWaiting(env.db)
+  } catch {
+    waiting = []
+  }
+  for (const w of waiting) {
+    const age = daysBetween(w.since, now)
+    const late = w.due !== null && w.due < today
+    if (!late && age < 5) continue
+    lines.push({
+      text: `${w.who}: ${w.text}${late ? ` (due ${daysBetween(w.due!, now)}d ago)` : ` (${age}d)`}`,
+      age: late ? 100 + age : age
+    })
+  }
   for (const t of env.mail?.needsReply ?? []) {
     if (!t.lastMessageAt) continue
     const age = daysBetween(t.lastMessageAt.slice(0, 10), now)
@@ -405,11 +429,34 @@ export function followUpRadar(env: Env): Candidate[] {
       title: `${plural(lines.length, 'follow-up')} to chase`,
       body: top.join('\n') + (more > 0 ? `\n…and ${more} more` : ''),
       actions: [
-        { type: 'open-tasks', filter: 'waiting', label: 'Waiting on others' },
+        { type: 'open-tasks', filter: 'waiting', label: 'Waiting On' },
         { type: 'open-email', label: 'Email follow-ups' }
       ]
     }
   ]
+}
+
+/** Chat: one nudge per conversation that has waited on you 4+ hours during work hours. */
+export function chatNeedsYou(env: Env): Candidate[] {
+  const { now } = env
+  const m = minutesOfDay(now)
+  if (!isWeekday(now) || m < env.workStartMin || m > env.workEndMin) return []
+  let list
+  try {
+    list = triage(env.db, { topicHit: topicMatcher(env.db) }).conversations
+  } catch {
+    return []
+  }
+  return list
+    .filter((c) => c.bucket === 'needs-you' && c.awaitingMeHours >= 4 && c.ageHours < 72)
+    .slice(0, 3)
+    .map((c) => ({
+      key: `chat:${c.key}`,
+      rule: 'chat' as const,
+      title: `${c.title} is waiting on you`,
+      body: `${c.lastSender}: ${c.lastText.slice(0, 140)}`,
+      actions: [{ type: 'open-chat' as const, label: 'Open Chat' }]
+    }))
 }
 
 /** 6. Chronic blocker: the same open question in the last 3 meetings of a recurring series. */
@@ -522,5 +569,6 @@ export const ALL_RULES: Record<RuleId, (env: Env) => Candidate[]> = {
   followup: followUpRadar,
   blocker: chronicBlockers,
   eod: endOfDay,
-  rollup: weeklyRollup
+  rollup: weeklyRollup,
+  chat: chatNeedsYou
 }

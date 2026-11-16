@@ -38,12 +38,6 @@ describe('parse', () => {
     })
     expect(p.tasks[1]).toMatchObject({ checked: true, priority: 'Medium', estMinutes: 90 })
     expect(p.chunks.map((c) => c.heading)).toEqual(['Context & Objective', 'Action Items'])
-    expect(p.llmBlocked).toBe(false)
-  })
-  it('flags CUI content so it is never sent to an LLM', () => {
-    expect(parseNote('---\nid: x\nclassification: CUI\n---\nhi').llmBlocked).toBe(true)
-    expect(parseNote('---\nid: x\nllm: off\n---\nhi').llmBlocked).toBe(true)
-    expect(parseNote('notes about #cui stuff').llmBlocked).toBe(true)
   })
   it('ignores non-task lines', () => {
     expect(parseTaskLine('- not a task', 0)).toBeNull()
@@ -333,5 +327,19 @@ describe('task due edits and inbox', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('task source links', () => {
+  it('a task keeps a readable link back to its source out of the description', () => {
+    const t = parseTaskLine(
+      '- [ ] Send the budget [Chat · Priya · Nov 14](nm://src/3f2c1a9e-1111-4222-8333-444455556666) | @Me | due:2026-11-20 ^t1x2y',
+      0
+    )!
+    expect(t.description).toBe('Send the budget')
+    expect(t.sourceLabel).toBe('Chat · Priya · Nov 14')
+    expect(t.sourceId).toBe('3f2c1a9e-1111-4222-8333-444455556666')
+    expect(t.due).toBe('2026-11-20')
+    expect(parseTaskLine('- [ ] Plain task', 0)!.sourceId).toBeNull()
   })
 })

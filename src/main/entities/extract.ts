@@ -62,7 +62,27 @@ export function extractEntities(input: ExtractInput, m: Matcher): ExtractedEntit
   for (const hit of text.matchAll(MENTION)) {
     const token = trimTail(hit[1])
     const k = token.toLowerCase()
+    // "@Sarah Chen": a known longer name right after the @ is that entity, not a stray "Sarah".
+    const words = text
+      .slice((hit.index ?? 0) + 1, (hit.index ?? 0) + 80)
+      .split(/\s+/)
+      .slice(0, 3)
+      .map(trimTail)
+    let longer: { category: EntityCategory; name: string; inRegistry: boolean } | null = null
+    for (let n = Math.min(3, words.length); n >= 2 && !longer; n--) {
+      const key = words.slice(0, n).join(' ').toLowerCase()
+      const l = m.lookup.get(key)
+      const p = m.pool?.byTerm.get(key)
+      if (l) longer = { ...l, inRegistry: true }
+      else if (p) longer = p
+    }
+    if (longer) {
+      ensure(longer.category, longer.name, longer.inRegistry)
+      continue
+    }
     if (!token || m.me.has(k) || m.lookup.has(k)) continue
+    // "@Jacob" when two people are called Jacob: tagged, but linked to nobody until it is reviewed.
+    if (m.ambiguous.has(k)) continue
     const known = m.pool?.byTerm.get(k)
     if (known) {
       ensure(known.category, known.name, known.inRegistry) // "@sarah" in any case still counts once
@@ -91,7 +111,7 @@ export function extractEntities(input: ExtractInput, m: Matcher): ExtractedEntit
 
   for (const hit of text.matchAll(HASHTAG)) {
     const tag = trimTail(hit[1]).toLowerCase()
-    if (tag && tag !== 'cui') add('topic', tag, 1, false)
+    if (tag) add('topic', tag, 1, false)
   }
 
   return [...out.values()]

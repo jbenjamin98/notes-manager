@@ -12,6 +12,7 @@ interface Step {
   /** The JSON text the model "wrote" (success only). */
   text?: string
   delayMs?: number
+  models?: string[]
 }
 type Seen = { path: string; headers: IncomingMessage['headers']; body: Record<string, unknown> }
 
@@ -41,6 +42,16 @@ async function fakeProviders(): Promise<{
         res.statusCode = step.status ?? 200
         for (const [k, v] of Object.entries(step.headers ?? {})) res.setHeader(k, v)
         res.setHeader('content-type', 'application/json')
+        if (req.method === 'GET' && req.url?.includes('/models')) {
+          res.end(
+            JSON.stringify({
+              models: (step.models ?? ['gemini-3.5-flash-lite', 'gemini-3-flash-preview']).map(
+                (m) => ({ name: 'models/' + m, supportedGenerationMethods: ['generateContent'] })
+              )
+            })
+          )
+          return
+        }
         if ((step.status ?? 200) >= 400) {
           res.end(JSON.stringify({ error: { message: 'scripted failure' } }))
           return
@@ -93,6 +104,7 @@ describe('LlmRouter against fake provider servers', () => {
       timeoutMs?: number
       order?: ProviderId[]
       disabled?: ProviderId[]
+      models?: LlmConfig['models']
     } = {}
   ) {
     const fake = await fakeProviders()
@@ -103,6 +115,7 @@ describe('LlmRouter against fake provider servers', () => {
       enabled: opts.enabled ?? true,
       order: opts.order ?? ['gemini', 'groq', 'openai', 'anthropic', 'openrouter'],
       disabled: opts.disabled,
+      models: opts.models,
       baseUrls: fake.base
     }
     // Gemini and Groq have keys by default; others only when asked.
@@ -118,6 +131,7 @@ describe('LlmRouter against fake provider servers', () => {
       now: () => clock.t,
       timeoutMs: opts.timeoutMs
     })
+    router.resetHealth('gemini')
     return { fake, db, router, clock, cfg }
   }
 
@@ -128,11 +142,11 @@ describe('LlmRouter against fake provider servers', () => {
     expect(r).toMatchObject({
       data: { answer: 'from gemini' },
       provider: 'gemini',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-flash-latest',
       cached: false
     })
     const call = fake.seen.gemini[0]
-    expect(call.path).toBe('/gemini/models/gemini-2.5-flash:generateContent')
+    expect(call.path).toBe('/gemini/models/gemini-flash-latest:generateContent')
     expect(call.headers['x-goog-api-key']).toBe('G-KEY')
     expect((call.body.generationConfig as { responseMimeType: string }).responseMimeType).toBe(
       'application/json'
@@ -143,7 +157,7 @@ describe('LlmRouter against fake provider servers', () => {
     ])
     fake.script.gemini.push({ text: ok() })
     await router.generateJson({ ...req, tier: 'extract' })
-    expect(fake.seen.gemini[1].path).toContain('gemini-2.5-flash-lite')
+    expect(fake.seen.gemini[1].path).toContain('gemini-flash-lite-latest')
   })
 
   it('fails over to the next provider on a 429, remembers the cooldown, then recovers', async () => {
@@ -332,11 +346,111 @@ describe('LlmRouter against fake provider servers', () => {
     expect((await router.generateJson(req)).data.answer).toBe('fresh')
   })
 
+  it('passes the output limit to each provider, and skips the repair retry when asked to', async () => {
+    const { fake, router } = await setup({
+      order: ['gemini', 'openai', 'anthropic'],
+      keys: { openai: 'O', anthropic: 'A' }
+    })
+    fake.script.gemini.push({ text: ok() })
+    await router.generateJson({ ...req, maxOut: 321 })
+    expect(
+      (fake.seen.gemini[0].body.generationConfig as { maxOutputTokens: number }).maxOutputTokens
+    ).toBe(321)
+    fake.script.openai.push({ text: ok() })
+    await router.generateJson({ ...req, maxOut: 222, only: 'openai' })
+    expect(fake.seen.openai[0].body.max_tokens).toBe(222)
+    fake.script.anthropic.push({ text: ok() })
+    await router.generateJson({ ...req, maxOut: 111, only: 'anthropic' })
+    expect(fake.seen.anthropic[0].body.max_tokens).toBe(111)
+
+    fake.script.gemini.push({ text: 'not json' }, { text: ok('would have been repaired') })
+    await expect(
+      router.generateJson({ ...req, repair: false, only: 'gemini' })
+    ).rejects.toBeInstanceOf(LlmUnavailable)
+    expect(fake.seen.gemini).toHaveLength(2) // the first call above plus this one: no second attempt
+  })
+
+  it('records what each call was for, for the spend meter', async () => {
+    const fake = await fakeProviders()
+    servers.push(fake.server)
+    const db = openDb(':memory:')
+    const router = new LlmRouter({
+      db,
+      getConfig: () => ({ enabled: true, order: ['gemini'], baseUrls: fake.base }),
+      getKey: () => 'K'
+    })
+    fake.script.gemini.push({ text: ok('a') }, { text: ok('b') })
+    await router.generateJson({ ...req, feature: 'ask' })
+    await router.generateJson({ ...req, feature: 'action:summarize-note' })
+    expect(
+      router
+        .usageByFeature()
+        .map((u) => u.feature)
+        .sort()
+    ).toEqual(['action:summarize-note', 'ask'])
+    expect(router.usageByFeature()[0].tokens).toBe(18)
+  })
+
+  it('stops calling providers once the daily token budget is spent, but cached answers stay free', async () => {
+    const fake = await fakeProviders()
+    servers.push(fake.server)
+    const db = openDb(':memory:')
+    const router = new LlmRouter({
+      db,
+      dailyBudget: () => 25,
+      getConfig: () => ({ enabled: true, order: ['gemini'], baseUrls: fake.base }),
+      getKey: () => 'K'
+    })
+    fake.script.gemini.push({ text: ok('first') }) // reports 11 + 7 = 18 tokens
+    await router.generateJson({ ...req, cacheKey: 'c' })
+    expect(router.budget()).toEqual({ used: 18, limit: 25 })
+    fake.script.gemini.push({ text: ok('second') }) // 18 -> 36, over the limit
+    await router.generateJson(req)
+    await expect(router.generateJson(req)).rejects.toMatchObject({ reason: 'budget' })
+    expect((await router.generateJson({ ...req, cacheKey: 'c' })).cached).toBe(true) // free
+    expect(fake.seen.gemini).toHaveLength(2)
+  })
+
   it('times out a hung provider and moves on', async () => {
     const { fake, router } = await setup({ timeoutMs: 150 })
     fake.script.gemini.push({ delayMs: 1000, text: ok('too slow') })
     fake.script.groq.push({ text: ok('on time') })
     const r = await router.generateJson(req)
     expect(r.provider).toBe('groq')
+  })
+
+  it('falls back to an available Gemini model when a retired model returns 404 and caches the replacement', async () => {
+    const { fake, db, router } = await setup({
+      models: { gemini: { extract: 'gemini-2.5-flash-lite' } }
+    })
+    fake.script.gemini.push(
+      { status: 404 },
+      { models: ['gemini-2.5-pro', 'gemini-3.5-flash-lite', 'gemini-3-flash-preview'] },
+      { text: ok('from 3.5 lite') },
+      { text: ok('cached model') }
+    )
+    const r1 = await router.generateJson({ ...req, tier: 'extract', only: 'gemini' })
+    expect(r1).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-3.5-flash-lite',
+      data: { answer: 'from 3.5 lite' }
+    })
+    expect(fake.seen.gemini.map((c) => c.path)).toEqual([
+      '/gemini/models/gemini-2.5-flash-lite:generateContent',
+      '/gemini/models?pageSize=200',
+      '/gemini/models/gemini-3.5-flash-lite:generateContent'
+    ])
+    expect(db.prepare('SELECT model FROM llm_usage').all()).toEqual([
+      { model: 'gemini-3.5-flash-lite' }
+    ])
+
+    const r2 = await router.generateJson({ ...req, tier: 'extract', only: 'gemini' })
+    expect(r2).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-3.5-flash-lite',
+      data: { answer: 'cached model' }
+    })
+    expect(fake.seen.gemini).toHaveLength(4)
+    expect(fake.seen.gemini[3].path).toBe('/gemini/models/gemini-3.5-flash-lite:generateContent')
   })
 })

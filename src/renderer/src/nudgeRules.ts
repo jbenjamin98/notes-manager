@@ -32,6 +32,11 @@ export const NUDGE_RULES: { id: string; label: string; description: string }[] =
     description: 'What is still open today, and what collides tomorrow.'
   },
   {
+    id: 'chat',
+    label: 'Chat needs you',
+    description: 'Someone asked you something in Chat and it has been waiting for hours.'
+  },
+  {
     id: 'rollup',
     label: 'Weekly review',
     description: 'On Friday afternoon: meetings, finished work and what is still open.'

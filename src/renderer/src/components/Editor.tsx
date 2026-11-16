@@ -1,6 +1,15 @@
 import { useEffect, useRef } from 'react'
-import { Annotation, EditorState, StateEffect, StateField, type Range } from '@codemirror/state'
+import {
+  Annotation,
+  Compartment,
+  EditorState,
+  StateEffect,
+  StateField,
+  type Range
+} from '@codemirror/state'
 import type { VocabEntry } from '@shared/contract'
+import type { TagVocabEntry } from '@shared/autotag'
+import { autoTagTyping, setTagConfig, type TagHooks, type TagSettings } from '../editor/autotag'
 import {
   EditorView,
   keymap,
@@ -15,6 +24,13 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { markdown } from '@codemirror/lang-markdown'
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
+import { richMode, livePreviewTheme } from '../editor/livePreview'
+import {
+  describe as describeFormat,
+  run as runCommand,
+  type EditorCommand,
+  type FormatInfo
+} from '../editor/commands'
 
 export interface EditorHandle {
   getText(): string
@@ -23,7 +39,15 @@ export interface EditorHandle {
   focus(): void
   /** Names to recognise and underline as the user writes (people, accounts, systems). */
   setVocab(v: VocabEntry[]): void
+  /** Everything that can be auto-tagged, and the settings, so `@` and `#` are written as you type. */
+  setTagging(entries: TagVocabEntry[], settings: TagSettings): void
+  /** Apply a toolbar action (bold, list, task field...). */
+  exec(cmd: EditorCommand): void
+  /** Rich text (rendered, editable) or Markdown (the raw syntax). */
+  setMode(mode: EditorMode): void
 }
+
+export type EditorMode = 'rich' | 'markdown'
 
 /** Marks transactions we dispatch ourselves (external reloads) so they don't trigger autosave. */
 const external = Annotation.define<boolean>()
@@ -229,6 +253,10 @@ const entityMarks = ViewPlugin.fromClass(
       let last = -1
       for (const f of found) {
         if (f.from < last) continue
+        // A word that already has its @ or # is underlined together with the sigil, so the tag
+        // highlight and the underline are one shape (not two pills).
+        const tagged = f.from > 0 && /[@#]/.test(doc.sliceString(f.from - 1, f.from))
+        const from = tagged ? f.from - 1 : f.from
         last = f.to
         ranges.push(
           Decoration.mark({
@@ -237,7 +265,7 @@ const entityMarks = ViewPlugin.fromClass(
               'data-ent': f.e.id,
               title: `${f.e.name} · ${CATEGORY_LABEL[f.e.category] ?? f.e.category} (Ctrl+click to open)`
             }
-          }).range(f.from, f.to)
+          }).range(from, f.to)
         )
       }
       return Decoration.set(ranges, true)
@@ -246,28 +274,54 @@ const entityMarks = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations }
 )
 
+const SHORTCUTS: [string, EditorCommand][] = [
+  ['Mod-b', { type: 'wrap', marker: '**' }],
+  ['Mod-i', { type: 'wrap', marker: '_' }],
+  ['Mod-Shift-x', { type: 'wrap', marker: '~~' }],
+  ['Mod-e', { type: 'wrap', marker: '`' }],
+  ['Mod-Alt-1', { type: 'heading', level: 1 }],
+  ['Mod-Alt-2', { type: 'heading', level: 2 }],
+  ['Mod-Alt-3', { type: 'heading', level: 3 }],
+  ['Mod-Shift-7', { type: 'list', kind: 'number' }],
+  ['Mod-Shift-8', { type: 'list', kind: 'bullet' }],
+  ['Mod-Shift-9', { type: 'list', kind: 'task' }]
+]
+
 interface Props {
+  /** The view to start in; change it later with the handle's `setMode`. */
+  mode: EditorMode
   /** Changing `docKey` remounts the editor with a fresh `initial`. */
   docKey: string
   initial: string
   onChange: (text: string) => void
   onSave: () => void
   onOpenEntity: (id: string) => void
+  /** A "from Chat · Priya" link in the note was clicked. */
+  onOpenSource?: (insightId: string) => void
+  /** Called whenever the cursor moves, so the toolbar can show what is active. */
+  onFormat?: (i: FormatInfo) => void
   handleRef: React.MutableRefObject<EditorHandle | null>
+  /** Look up new topics and names, and report tags the model wrote. */
+  tagHooks?: TagHooks
 }
 
 export default function Editor({
+  mode,
   docKey,
   initial,
   onChange,
   onSave,
   onOpenEntity,
-  handleRef
+  onOpenSource,
+  onFormat,
+  handleRef,
+  tagHooks
 }: Props): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null)
-  const cb = useRef({ onChange, onSave, onOpenEntity })
+  const modeSlot = useRef(new Compartment()).current
+  const cb = useRef({ onChange, onSave, onOpenEntity, onOpenSource, onFormat, tagHooks })
   useEffect(() => {
-    cb.current = { onChange, onSave, onOpenEntity }
+    cb.current = { onChange, onSave, onOpenEntity, onOpenSource, onFormat, tagHooks }
   })
 
   useEffect(() => {
@@ -286,10 +340,20 @@ export default function Editor({
           hiddenFrontmatter,
           protectFrontmatter,
           decorations,
+          modeSlot.of(mode === 'rich' ? richMode : []),
+          livePreviewTheme,
           vocabField,
           entityMarks,
+          autoTagTyping(() => cb.current.tagHooks ?? null),
           EditorView.domEventHandlers({
             mousedown: (e) => {
+              // A source link ("Chat · Priya · Nov 14") opens where the line came from.
+              const src = (e.target as HTMLElement).closest('[data-src]')?.getAttribute('data-src')
+              if (src && cb.current.onOpenSource) {
+                e.preventDefault()
+                cb.current.onOpenSource(src)
+                return true
+              }
               if (!(e.ctrlKey || e.metaKey)) return false
               const el = (e.target as HTMLElement).closest('[data-ent]')
               const id = el?.getAttribute('data-ent')
@@ -302,11 +366,17 @@ export default function Editor({
           theme,
           keymap.of([
             { key: 'Mod-s', preventDefault: true, run: () => (cb.current.onSave(), true) },
+            ...SHORTCUTS.map(([key, cmd]) => ({
+              key,
+              preventDefault: true,
+              run: (v: EditorView): boolean => (runCommand(v, cmd), true)
+            })),
             indentWithTab,
             ...defaultKeymap,
             ...historyKeymap
           ]),
           EditorView.updateListener.of((u) => {
+            if (u.docChanged || u.selectionSet) cb.current.onFormat?.(describeFormat(u.state))
             if (u.docChanged && !u.transactions.some((tr) => tr.annotation(external))) {
               cb.current.onChange(u.state.doc.toString())
             }
@@ -316,6 +386,14 @@ export default function Editor({
     })
     handleRef.current = {
       setVocab: (v) => view.dispatch({ effects: setVocabEffect.of(v) }),
+      setTagging: (entries, settings) =>
+        view.dispatch({ effects: setTagConfig.of({ entries, settings }) }),
+      setMode: (m) =>
+        view.dispatch({ effects: modeSlot.reconfigure(m === 'rich' ? richMode : []) }),
+      exec: (cmd) => {
+        runCommand(view, cmd)
+        view.focus()
+      },
       getText: () => view.state.doc.toString(),
       setText: (text) => {
         if (text === view.state.doc.toString()) return

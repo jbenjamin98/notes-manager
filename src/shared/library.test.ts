@@ -98,6 +98,15 @@ describe('library grouping', () => {
     expect(groupNotes('tasks', [n('z', 'Done', '2026-11-01')], { now: NOW })).toEqual([])
   })
 
+  it('also matches notes found by full-text search of their body', () => {
+    const g = groupNotes('newest', notes, {
+      now: NOW,
+      query: 'zzz-not-in-titles',
+      extraPaths: new Set(['b'])
+    })
+    expect(g.flatMap((x) => x.notes.map((n) => n.path))).toEqual(['b'])
+  })
+
   it('search and type filters apply to every view (title, account or mentioned name)', () => {
     expect(
       groupNotes('newest', notes, { now: NOW, query: 'sarah' })

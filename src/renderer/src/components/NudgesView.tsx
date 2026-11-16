@@ -12,7 +12,8 @@ const RULE_LABEL: Record<NudgeItem['rule'], string> = {
   blocker: 'Blocker',
   eod: 'End of day',
   reminder: 'Reminder',
-  rollup: 'Weekly review'
+  rollup: 'Weekly Review',
+  chat: 'Chat'
 }
 
 const localDay = (iso: string): string => new Date(iso).toLocaleDateString('en-CA')
@@ -80,7 +81,7 @@ export default function NudgesView({
 
         {groups.map(([label, list]) => (
           <section key={label} className="mb-6">
-            <h2 className="mb-2 px-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
+            <h2 className="mb-2 px-1 text-xs font-semibold tracking-wide text-muted uppercase">
               {label}
             </h2>
             <ul className="space-y-3">

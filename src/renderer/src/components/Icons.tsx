@@ -1,4 +1,4 @@
-import type { SVGProps } from 'react'
+import { useId, type SVGProps } from 'react'
 
 const base = (p: SVGProps<SVGSVGElement>): SVGProps<SVGSVGElement> => ({
   width: 16,
@@ -13,6 +13,24 @@ const base = (p: SVGProps<SVGSVGElement>): SVGProps<SVGSVGElement> => ({
   ...p
 })
 
+export const HomeIcon = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+    {...p}
+  >
+    <path d="M3.5 11 12 4l8.5 7" />
+    <path d="M5.5 9.8V20h13V9.8" />
+    <path d="M10 20v-5.5h4V20" />
+  </svg>
+)
 export const PlusIcon = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <svg {...base(p)}>
     <path d="M12 5v14M5 12h14" />
@@ -74,9 +92,25 @@ export const BellIcon = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </svg>
 )
 
-export const SparkleIcon = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
-  <svg {...base(p)}>
-    <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
-    <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
-  </svg>
-)
+/**
+ * The AI sparkle: the same four-pointed star as the app icon, filled with a gradient that follows
+ * the theme (soft gold on dark, warm amber to coral on light) so it stays visible on both.
+ */
+export const SparkleIcon = (p: SVGProps<SVGSVGElement>): React.JSX.Element => {
+  const id = useId().replace(/:/g, '')
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" aria-hidden {...p}>
+      <defs>
+        <linearGradient id={`sp${id}`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" style={{ stopColor: 'var(--spark-a)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--spark-b)' }} />
+        </linearGradient>
+      </defs>
+      <g fill={`url(#sp${id})`}>
+        <path d="M10 2.5Q10 11 18.5 11Q10 11 10 19.5Q10 11 1.5 11Q10 11 10 2.5Z" />
+        <path d="M19.2 1.6Q19.2 5.2 22.8 5.2Q19.2 5.2 19.2 8.8Q19.2 5.2 15.6 5.2Q19.2 5.2 19.2 1.6Z" />
+        <path d="M18.4 15.2Q18.4 18 21.2 18Q18.4 18 18.4 20.8Q18.4 18 15.6 18Q18.4 18 18.4 15.2Z" />
+      </g>
+    </svg>
+  )
+}

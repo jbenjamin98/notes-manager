@@ -16,3 +16,12 @@ describe('IPC contract guards', () => {
     expect(create.safeParse({ kind: 'adhoc', title: 'x', date: 'today' }).success).toBe(false)
   })
 })
+
+describe('older settings files', () => {
+  it("read the Google source names from before ('session' and 'api')", async () => {
+    const { SettingsSchema } = await import('./contract')
+    expect(SettingsSchema.parse({ google: { method: 'session' } }).google.method).toBe('script')
+    expect(SettingsSchema.parse({ google: { method: 'api' } }).google.method).toBe('oauth')
+    expect(SettingsSchema.parse({}).google.method).toBe('script')
+  })
+})
