@@ -11,6 +11,8 @@
  * the `| @owner | due:` fields of a task line, the user's own names, names shared by two people, or
  * everyday words that are also names.
  */
+import { GAZETTEER, GAZETTEER_RE } from './gazetteer'
+
 export interface TagVocabEntry {
   name: string
   /** person | customer | project | system | place | topic */
@@ -43,6 +45,8 @@ export interface TagHit {
 export interface TagOptions {
   /** Lowercase words never to tag (the user took the tag off before, or turned it off in Settings). */
   ignore?: ReadonlySet<string>
+  /** What the user said a name is (lowercase name -> kind), from corrections. Beats every rule. */
+  kinds?: Readonly<Record<string, string>>
 }
 
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -191,6 +195,8 @@ export interface NewName {
   text: string
   /** What it looks like, from the words around it. A person when nothing says otherwise. */
   kind: Exclude<Suggested['kind'], 'topic'>
+  /** A weak guess ("with Acme", "in Review"): offered as a maybe-tag, not written for you. */
+  maybe?: boolean
 }
 
 const CAP = String.raw`[\p{Lu}][\p{L}\p{N}&'’-]{1,24}`
@@ -215,7 +221,7 @@ const W = (list: string): string =>
  * Other kinds of names, found without a model from the words around them. Earlier entries win when
  * two overlap ("with Acme Inc" is a company, not a person called "Acme Inc").
  */
-const KIND_RULES: { kind: NewName['kind']; re: RegExp; mid?: boolean }[] = [
+const KIND_RULES: { kind: NewName['kind']; re: RegExp; mid?: boolean; weak?: boolean }[] = [
   // Companies: a name ending like one, or labelled as a customer.
   { kind: 'customer', re: re(`\\b(${CAP}(?:\\s+${CAP}){0,2}\\s+(?:${SUFFIX})\\b\\.?)`) },
   {
@@ -259,6 +265,7 @@ const KIND_RULES: { kind: NewName['kind']; re: RegExp; mid?: boolean }[] = [
   // Places
   {
     kind: 'place',
+    weak: true,
     re: re(
       `(?<=\\b(?:${W('in|near|visit|visiting|visited|trip to|travel to|travelling to|traveling to|fly to|flying to|flight to|based in|office in|site in|onsite in')})\\s+)(${CAP2})(?![\\p{L}])`
     )
@@ -305,6 +312,15 @@ export function findNewNames(
       known.byTerm.has(first.toLowerCase())
     )
   }
+  // Well-known places and software need no cue words around them.
+  for (const m of text.matchAll(GAZETTEER_RE)) {
+    const name = m[0]
+    const from = m.index ?? 0
+    const lower = name.toLowerCase()
+    if (me.has(lower) || isKnown(name) || opts.ignore?.has(lower)) continue
+    if (overlaps(from, from + name.length, skip) || taken(from, from + name.length)) continue
+    out.push({ from, to: from + name.length, text: name, kind: GAZETTEER.get(name) ?? 'system' })
+  }
   for (const rule of KIND_RULES) {
     for (const m of text.matchAll(rule.re)) {
       const name = (m[1] ?? m[0]).replace(/\.$/, '')
@@ -318,7 +334,7 @@ export function findNewNames(
       // A capital letter at the start of a sentence says nothing, so "Next release" is no project.
       if (rule.mid && startsSentence(text, from)) continue
       if (overlaps(from, to, skip) || taken(from, to)) continue
-      out.push({ from, to, text: name, kind: rule.kind })
+      out.push({ from, to, text: name, kind: rule.kind, ...(rule.weak ? { maybe: true } : {}) })
     }
   }
   for (const m of text.matchAll(CUE)) {
@@ -336,7 +352,21 @@ export function findNewNames(
     if (known.byTerm.has(first) || known.byTerm.has(words[0])) continue
     if (opts.ignore?.has(first)) continue
     if (overlaps(from, from + name.length, skip) || taken(from, from + name.length)) continue
-    out.push({ from, to: from + name.length, text: name, kind: 'person' })
+    // After "tell / ask / email" it is surely a person; after "with / from / by / for / to" it could be anything.
+    const weak = /\b(?:with|from|by|for|to|per)\s+$/i.test(text.slice(0, from))
+    out.push({
+      from,
+      to: from + name.length,
+      text: name,
+      kind: 'person',
+      ...(weak ? { maybe: true } : {})
+    })
+  }
+  // What you corrected before beats every rule.
+  for (const o of out) {
+    const k = opts.kinds?.[o.text.toLowerCase()]
+    if (k && ['person', 'customer', 'project', 'system', 'place'].includes(k))
+      o.kind = k as NewName['kind']
   }
   return out.sort((a, b) => a.from - b.from)
 }
@@ -346,12 +376,47 @@ export function untaggedWordCount(text: string): number {
   return (text.match(/(?<![@#\w])[\p{L}][\p{L}\p{N}'-]{2,}/gu) ?? []).length
 }
 
+/**
+ * Is a model call worth it for this line? Only when the rules left something unresolved: a
+ * capitalised word in the middle of a sentence that is not a known name and was not already found,
+ * or a sentence with an uncommon word that could be a new topic. Short or fully
+ * understood lines never cost a call.
+ */
+export function needsModel(
+  text: string,
+  known: CompiledTagVocab,
+  found: readonly string[]
+): boolean {
+  const skip = protectedRanges(text)
+  const have = new Set(found.map((f) => f.toLowerCase()))
+  let capitalised = 0
+  for (const m of text.matchAll(/(?<![@#\p{L}\p{N}_])\p{Lu}[\p{L}'’-]{2,}/gu)) {
+    const from = m.index ?? 0
+    const w = m[0]
+    const lower = w.toLowerCase()
+    if (overlaps(from, from + w.length, skip)) continue
+    if (/(^|[.!?:]\s+|\n\s*(?:[-*]\s+(?:\[.\]\s+)?)?)$/.test(text.slice(0, from))) continue // sentence start
+    if (NOT_NAMES.has(lower) || TOPIC_STOP.has(lower) || have.has(lower)) continue
+    if (known.byTerm.has(w) || known.byTerm.has(lower)) continue
+    capitalised++
+  }
+  if (capitalised > 0) return true
+  const words = text.match(/(?<![@#\p{L}\p{N}_])\p{L}[\p{L}'’-]*/gu) ?? []
+  const uncommon = words.filter((w) => {
+    const l = w.toLowerCase()
+    return w.length >= 6 && !TOPIC_STOP.has(l) && !known.byTerm.has(l) && !have.has(l)
+  })
+  return words.length >= 5 && uncommon.length >= 1
+}
+
 // --------------------------------------------------------------- tags suggested from outside
 
 export interface Suggested {
   /** The exact words in the line. */
   text: string
   kind: 'topic' | 'person' | 'customer' | 'project' | 'system' | 'place'
+  /** A weak guess: shown as a maybe-tag (Tab to accept) instead of being written. */
+  maybe?: boolean
 }
 
 export interface Placed {

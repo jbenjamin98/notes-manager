@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { Db } from '../db'
 import type { Vault } from '../vault/vault'
+import { votedKinds } from '../entities/discover'
 import {
   applySuggested,
   autoTag,
@@ -11,10 +12,13 @@ import {
   protectedRanges,
   TOPIC_STOP,
   untaggedWordCount,
+  needsModel,
   type CompiledTagVocab,
   type Suggested
 } from '../../shared/autotag'
+
 import { LlmUnavailable, type JsonRequest, type JsonResult } from '../llm/router'
+/** Model calls a day (on top of the per-minute limit and the provider's own budget). */ const DAILY_CAP = 120
 
 /**
  * Main-process side of auto-tagging: tags text on submit (quick capture, Co-Pilot cards, Waiting On
@@ -29,7 +33,13 @@ export interface TagDeps {
   settings: () => {
     meAliases: string[]
     llm: { enabled: boolean }
-    autoTag: { enabled: boolean; ai: boolean; ignore: string[] }
+    autoTag: {
+      enabled: boolean
+      ai: boolean
+      ignore: string[]
+      kinds?: Record<string, string>
+      topics?: string[]
+    }
   }
   now?: () => number
   /** False when the AI provider is close to its rate limit: tagging never takes the last calls from the Co-Pilot. */
@@ -65,15 +75,42 @@ export class AutoTagger {
 
   /** Built fresh each time: this only runs when something is saved or a line is finished. */
   private vocab(): CompiledTagVocab {
-    return compileTagVocab(this.deps.vault().tagVocabulary())
+    return compileTagVocab(
+      this.deps.vault().tagVocabulary(this.deps.settings().autoTag.topics ?? [])
+    )
   }
 
   private me(): Set<string> {
     return new Set(['me', ...this.deps.settings().meAliases.map((a) => a.toLowerCase())])
   }
 
+  private voted: { at: number; kinds: Record<string, string> } | null = null
+
+  /** What you told it (recategorise) beats what your notes' wording says (voting across all mentions). */
+  private kinds(): Record<string, string> {
+    const now = this.deps.now?.() ?? Date.now()
+    if (!this.voted || now - this.voted.at > 10 * 60_000) {
+      let kinds: Record<string, string> = {}
+      try {
+        kinds = votedKinds(this.deps.db, this.vocab(), this.me())
+      } catch {
+        /* voting is an extra; a failure just means no votes */
+      }
+      this.voted = { at: now, kinds }
+    }
+    return { ...this.voted.kinds, ...(this.deps.settings().autoTag.kinds ?? {}) }
+  }
+
   private ignore(): Set<string> {
     return new Set(this.deps.settings().autoTag.ignore.map((w) => w.toLowerCase()))
+  }
+
+  /** Model calls made today and the daily limit (shown in Settings). */
+  usage(): { today: number; cap: number } {
+    const key = `autotag.ai.${new Date(this.deps.now?.() ?? Date.now()).toISOString().slice(0, 10)}`
+    const row = this.deps.db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as
+      { value: string } | undefined
+    return { today: Number(row?.value ?? 0), cap: DAILY_CAP }
   }
 
   /** Under a handful of model calls a minute, and a daily cap, on top of the token budget. */
@@ -89,7 +126,7 @@ export class AutoTagger {
           { value: string } | undefined
       )?.value ?? 0
     )
-    if (n >= 200) return false
+    if (n >= DAILY_CAP) return false
     this.deps.db
       .prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)')
       .run(key, String(n + 1))
@@ -104,13 +141,20 @@ export class AutoTagger {
     const v = this.vocab()
     const me = this.me()
     const ignore = this.ignore()
-    const tags: Suggested[] = findNewNames(line, v, me, { ignore }).map((n) => ({
-      text: n.text,
-      kind: n.kind
-    }))
+    const tags: Suggested[] = findNewNames(line, v, me, { ignore, kinds: this.kinds() }).map(
+      (n) => ({ text: n.text, kind: n.kind, ...(n.maybe ? { maybe: true } : {}) })
+    )
     let via: 'llm' | 'rules' = 'rules'
     const worthAsking =
-      s.autoTag.ai && s.llm.enabled && line.trim().length >= 8 && untaggedWordCount(line) >= 2
+      s.autoTag.ai &&
+      s.llm.enabled &&
+      line.trim().length >= 8 &&
+      untaggedWordCount(line) >= 2 &&
+      needsModel(
+        line,
+        v,
+        tags.map((t) => t.text)
+      )
     if (worthAsking && this.allowAi()) {
       try {
         const res = await this.deps.llm.generateJson({
@@ -208,13 +252,17 @@ export class AutoTagger {
     const slow = opts.fast ? null : this.suggest(first)
     if (!slow) {
       // Names after a verb cue still count without the model.
-      const rules = findNewNames(first, this.vocab(), this.me(), { ignore: this.ignore() }).map(
-        (n) => ({ text: n.text, kind: n.kind })
-      )
+      const rules = findNewNames(first, this.vocab(), this.me(), {
+        ignore: this.ignore(),
+        kinds: this.kinds()
+      })
+        .filter((n) => !n.maybe) // a weak guess is never written for you at save time
+        .map((n) => ({ text: n.text, kind: n.kind }))
       return rules.length ? this.tagNewThings(first, rules) : first
     }
     const timeout = new Promise<null>((r) => setTimeout(() => r(null), opts.timeoutMs ?? 2500))
     const got = await Promise.race([slow, timeout])
-    return got && got.tags.length ? this.tagNewThings(first, got.tags) : first
+    const sure = got?.tags.filter((t) => !t.maybe) ?? []
+    return sure.length ? this.tagNewThings(first, sure) : first
   }
 }

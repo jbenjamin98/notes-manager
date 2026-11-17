@@ -1057,7 +1057,7 @@ ${f.body}`,
     if (!msg || !p) throw new Error('That suggestion is no longer available.')
     if (p.status !== 'pending') return msg
     const ctx = this.ctx()
-    const final = mergeEdits(p, edits, ctx)
+    const final = mergeEdits(p, edits)
     const vault = this.deps.vault()
     let applied: Proposal
     if (final.kind === 'task' && !ownerIsMe(final.owner, this.deps.getSettings().meAliases)) {

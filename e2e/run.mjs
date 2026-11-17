@@ -685,7 +685,7 @@ try {
   await sleep(300)
   check(
     'capture window shows text shortcuts',
-    (await cap.ev('document.body.innerText')).includes('@Sarah') &&
+    (await cap.ev('document.body.innerText')).includes('@Name') &&
       (await cap.ev('document.body.innerText')).includes('!high')
   )
   await cap.ev(
@@ -910,6 +910,33 @@ try {
         `window.api.invoke('entities:manage-list').then(r=>r.ok && r.data.some(e=>e.name==='Rhea'))`
       ))
   )
+  // A weak guess ("with Zorblax") is a maybe-tag: dotted underline, Tab writes it, nothing changes by itself
+  await typeKeys('\nWe met with Zorblax yesterday.')
+  for (let i = 0; i < 25 && !(await main.ev(`!!document.querySelector('.cm-maybe-tag')`)); i++)
+    await sleep(250)
+  check(
+    'a weak guess is offered as a maybe-tag and is not written for you',
+    (await main.ev(`!!document.querySelector('.cm-maybe-tag')`)) &&
+      !(await edText()).includes('@Zorblax'),
+    JSON.stringify([
+      await main.ev(`document.querySelectorAll('.cm-maybe-tag').length`),
+      (await edText()).slice(-90)
+    ])
+  )
+  await main.send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9
+  })
+  await main.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9
+  })
+  for (let i = 0; i < 20 && !(await edText()).includes('@Zorblax'); i++) await sleep(250)
+  check('Tab turns the maybe-tag into a real tag', (await edText()).includes('@Zorblax'))
   // A name shared by two people is still tagged, and waits in Review Names
   for (const n of ['Priya Nair', 'Priya Shah'])
     await main.ev(
@@ -982,19 +1009,36 @@ try {
     (await text()).includes('Tag names and topics as I type') &&
       (await main.ev(`!!document.querySelector('[data-testid=tag-ignore]')`))
   )
+  check(
+    'Tag health counts the tags you kept and took off',
+    await main.ev(
+      `(()=>{const t=document.querySelector('[data-testid=tag-health-summary]')?.innerText ?? '';return /automatic tags kept/.test(t) && /taken off/.test(t)})()`
+    )
+  )
   await main.ev(`document.querySelector('button[aria-label=Settings]').click()`)
   await sleep(500)
 
-  // Someone else's action is a Waiting On note line, not a task
+  // A task is always mine, even when it is about someone: the @Name is a tag, not the owner
+  await main.ev(
+    `window.api.invoke('tasks:quick-add',{text:'Complete the onboarding documentation for @John Smith'})`
+  )
+  await sleep(800)
+  check(
+    '"... for @John Smith" is my task, tagged with John Smith',
+    await main.ev(
+      `window.api.invoke('tasks:list').then(r=>r.ok && r.data.some(t=>/onboarding documentation for @John Smith/.test(t.description) && t.owner==='Me' && t.isMine))`
+    )
+  )
+  // Only the explicit "waiting on X: ..." form is a Waiting On note line
   const qa = await main.ev(
-    `window.api.invoke('tasks:quick-add',{text:'@Priya send the budget numbers friday'}).then(r=>r.ok && r.data.kind)`
+    `window.api.invoke('tasks:quick-add',{text:'Waiting on Priya: send the budget numbers friday'}).then(r=>r.ok && r.data.kind)`
   )
   await sleep(600)
   const waitingNow = await main.ev(
     `window.api.invoke('waiting:list').then(r=>r.ok ? r.data.map(w=>w.who+': '+w.text) : [])`
   )
   check(
-    '"@Priya ..." becomes a Waiting On note, not a task',
+    '"Waiting on Priya: ..." becomes a Waiting On note, not a task',
     qa === 'waiting' &&
       waitingNow.some((w) => w.startsWith('Priya: send the budget numbers')) &&
       !(await main.ev(
@@ -1002,6 +1046,74 @@ try {
       )),
     JSON.stringify(waitingNow)
   )
+
+  // Tasks can be filtered by what they are about (the John Smith task above)
+  await main.ev(`document.querySelector('button[aria-label=Tasks]').click()`)
+  await sleep(500)
+  await main.ev(
+    `[...document.querySelectorAll('button,div')].find(b=>b.textContent.trim().startsWith('My Tasks'))?.click()`
+  )
+  await sleep(900)
+  check(
+    'Tasks has an About filter listing John Smith',
+    await main.ev(
+      `(()=>{const s=document.querySelector('[data-testid=tasks-about]');return !!s && [...s.options].some(o=>o.textContent==='John Smith')})()`
+    )
+  )
+  await main.shot('14-tasks-about.png')
+
+  // Meeting Series: a repeating meeting becomes one page with its sessions
+  {
+    const { DatabaseSync: Db2 } = await import('node:sqlite')
+    const d2 = new Db2(join(userData, 'index.db'))
+    const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10)
+    for (const [id, off] of [
+      ['ev-ps-1', -7],
+      ['ev-ps-2', 0],
+      ['ev-ps-3', 7]
+    ])
+      d2.prepare(
+        `INSERT OR REPLACE INTO calendar_events (id, title, start_at, end_at, date, all_day, kind) VALUES (?, 'Platform Standup', ?, ?, ?, 0, 'meeting')`
+      ).run(id, day(off) + 'T10:00:00Z', day(off) + 'T10:30:00Z', day(off))
+    // A renamed occurrence that Google says belongs to the same repeating series
+    d2.prepare(
+      "UPDATE calendar_events SET series_id = 'rep-ps' WHERE id IN ('ev-ps-1','ev-ps-2')"
+    ).run()
+    d2.prepare(
+      `INSERT OR REPLACE INTO calendar_events (id, title, start_at, end_at, date, all_day, kind, series_id) VALUES ('ev-ps-4', 'Team Sync (moved)', ?, ?, ?, 0, 'meeting', 'rep-ps')`
+    ).run(day(14) + 'T10:00:00Z', day(14) + 'T10:30:00Z', day(14))
+    d2.close()
+  }
+  await main.ev(
+    `[...document.querySelectorAll('button,div')].find(b=>b.textContent.trim()==='Meeting Series')?.click()`
+  )
+  await sleep(1200)
+  check(
+    'Meeting Series lists the repeating meeting',
+    (
+      await main.ev(`document.querySelector('[data-testid=series-list]')?.innerText ?? ''`)
+    ).includes('Platform Standup')
+  )
+  await main.ev(
+    `[...document.querySelectorAll('[data-testid=series-list] button')].find(b=>b.textContent.includes('Platform Standup')).click()`
+  )
+  await sleep(1000)
+  check(
+    'a series page joins a renamed occurrence by Google repeat id, and offers the master page',
+    await main.ev(
+      `(()=>{const t=document.querySelector('[data-testid=series-detail]')?.innerText ?? '';return t.includes('4 sessions') && t.includes('Start Next Session') && t.includes('Create Master Page')})()`
+    )
+  )
+  await main.shot('15-series.png')
+  {
+    // Leave the calendar as it was for the checks that follow
+    const { DatabaseSync: Db3 } = await import('node:sqlite')
+    const d3 = new Db3(join(userData, 'index.db'))
+    d3.prepare("DELETE FROM calendar_events WHERE id LIKE 'ev-ps-%'").run()
+    d3.close()
+  }
+  await main.ev(`document.querySelector('button[aria-label=Notes]').click()`)
+  await sleep(400)
 
   // Inbox: an insight with a source reference becomes a task that keeps a readable link back
   const { DatabaseSync } = await import('node:sqlite')

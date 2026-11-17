@@ -117,3 +117,16 @@ describe('entity extraction', () => {
     ).toEqual(['latency', 'rate-limits'])
   })
 })
+
+describe('@Name Surname for someone not listed yet', () => {
+  it('reads two capitalised words as one name, but not "@Sarah Please"', async () => {
+    const { extractEntities } = await import('./extract')
+    const { buildMatcher, emptyRegistry } = await import('./registry')
+    const m = buildMatcher(emptyRegistry(), ['Me'])
+    const names = (body: string): string[] =>
+      extractEntities({ title: '', body, attendees: [], account: null }, m).map((e) => e.name)
+    expect(names('Finish the onboarding documentation for @John Smith')).toEqual(['John Smith'])
+    expect(names('Thanks @Sarah Please send it')).toEqual(['Sarah'])
+    expect(names('Ping @Sarah tomorrow')).toEqual(['Sarah'])
+  })
+})

@@ -388,5 +388,22 @@ CREATE TABLE insight_runs (
 ALTER TABLE tasks ADD COLUMN source_id TEXT;
 ALTER TABLE tasks ADD COLUMN source_label TEXT;
 `
+  },
+  {
+    version: 12,
+    name: 'series-and-tag-events',
+    sql: `
+-- A meeting note linked to a series by hand (frontmatter "series:"); '-' means not in any series.
+ALTER TABLE notes ADD COLUMN series TEXT;
+-- What happened to each automatic tag: kept, accepted from a maybe, or taken off again.
+CREATE TABLE tag_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  word TEXT NOT NULL,
+  sigil TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('tagged','accepted','rejected')),
+  at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_tag_events_word ON tag_events(word);
+`
   }
 ]

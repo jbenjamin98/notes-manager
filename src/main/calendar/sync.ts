@@ -53,10 +53,11 @@ export function applyEvents(db: Db, events: CalEvent[]): { upserted: number; rem
       }
     }
     const up = db.prepare(
-      `INSERT INTO calendar_events (id,title,start_at,end_at,date,all_day,kind,status,fetched_at)
-       VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      `INSERT INTO calendar_events (id,title,start_at,end_at,date,all_day,kind,status,series_id,fetched_at)
+       VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
        ON CONFLICT(id) DO UPDATE SET title=excluded.title,start_at=excluded.start_at,end_at=excluded.end_at,
          date=excluded.date,all_day=excluded.all_day,kind=excluded.kind,status=excluded.status,
+         series_id=COALESCE(excluded.series_id,series_id),
          fetched_at=CURRENT_TIMESTAMP`
     )
     for (const e of events) {
@@ -68,7 +69,8 @@ export function applyEvents(db: Db, events: CalEvent[]): { upserted: number; rem
         e.date,
         e.allDay ? 1 : 0,
         e.kind,
-        e.status
+        e.status,
+        e.seriesId ?? null
       )
     }
     db.exec('COMMIT')

@@ -1278,3 +1278,10 @@ button:not(:disabled):active {
     animation: none;
   }
 }
+
+/* A weak tag guess in the editor: dotted underline, Tab accepts, Esc ignores. */
+.cm-maybe-tag {
+  border-bottom: 1.5px dotted var(--accent);
+  background: var(--accent-soft);
+  border-radius: 3px;
+}

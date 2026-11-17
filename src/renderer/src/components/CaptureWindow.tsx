@@ -74,6 +74,15 @@ export default function CaptureWindow(): React.JSX.Element {
       mode === 'task' ? (parsed?.description ?? '') : text.split('\n').slice(1).join('\n')
     return findTags(body, tagVocab).map((h) => `${h.sigil}${body.slice(h.from, h.to)}`)
   }, [tagOn, tagVocab, mode, parsed, text])
+  // Everything a task is about: names you tagged with @ plus the ones your lists will tag. The task
+  // is always yours; these only say who or what it concerns.
+  const involves = useMemo(() => {
+    if (mode !== 'task') return []
+    const typed = (parsed?.description ?? '').match(
+      /(?<![\p{L}\p{N}])@[\p{L}][\p{L}\p{N}._-]*(?:\s+\p{Lu}[\p{L}\p{N}._-]*)?/gu
+    )
+    return [...new Set([...(typed ?? []), ...willTag])]
+  }, [mode, parsed, willTag])
   // Past a short paragraph the small box is the wrong place: offer to continue in the app.
   const long = text.length > 280 || text.split('\n').length > 6
 
@@ -104,7 +113,11 @@ export default function CaptureWindow(): React.JSX.Element {
     const loadPeople = (): void => {
       void window.api
         .invoke('entities:vocabulary')
-        .then((r) => r.ok && setPeople(r.data.filter((v) => v.category === 'person')))
+        .then(
+          (r) =>
+            r.ok &&
+            setPeople(r.data.filter((v) => v.category !== 'topic' && v.category !== 'event'))
+        )
     }
     input.current?.focus()
     loadPeople()
@@ -163,8 +176,11 @@ export default function CaptureWindow(): React.JSX.Element {
     }
   }
 
-  // "@Sa" at the end of the text: suggest names.
-  const mention = mode === 'task' ? /(^|\s)@([\p{L}][\p{L}\p{N}._-]*)$/u.exec(text) : null
+  // "@Sa" or "@John Sm" at the end of the text: suggest people, companies, places, projects, systems.
+  const mention =
+    mode === 'task'
+      ? /(^|\s)@([\p{L}][\p{L}\p{N}._-]*(?: [\p{L}][\p{L}\p{N}._-]*)?)$/u.exec(text)
+      : null
   const suggestions = useMemo(
     () =>
       mention
@@ -175,7 +191,9 @@ export default function CaptureWindow(): React.JSX.Element {
     [mention, people]
   )
   const pickName = (name: string): void => {
-    setText((t) => t.replace(/@[\p{L}][\p{L}\p{N}._-]*$/u, `@${name.split(' ')[0]} `))
+    setText((t) =>
+      t.replace(/@[\p{L}][\p{L}\p{N}._-]*(?: [\p{L}][\p{L}\p{N}._-]*)?$/u, `@${name} `)
+    )
     input.current?.focus()
   }
 
@@ -441,16 +459,11 @@ export default function CaptureWindow(): React.JSX.Element {
         ) : help ? (
           <span>
             {mode === 'task'
-              ? '@Sarah · tomorrow / Friday / due:2026-12-01 · !high !med !low · ~30m ~1h'
+              ? 'Tasks are always yours · @Name says who it is about · tomorrow / Friday · !high !med !low · ~30m ~1h'
               : 'First line is the title. Shift+Enter adds a line. Saved as an ad hoc note.'}
           </span>
         ) : parsed?.description ? (
           <>
-            {parsed.owner !== 'Me' && (
-              <span className={chip} style={{ background: 'var(--accent-soft)' }}>
-                @{parsed.owner}
-              </span>
-            )}
             {parsed.due && (
               <span className={chip} style={{ background: 'var(--accent-soft)' }}>
                 Due {shortDate(parsed.due)}
@@ -466,7 +479,8 @@ export default function CaptureWindow(): React.JSX.Element {
                 {parsed.estMinutes} min
               </span>
             )}
-            {willTag.map((t) => (
+            {mode === 'task' && involves.length > 0 && <span>Involves</span>}
+            {(mode === 'task' ? involves : willTag).map((t) => (
               <span key={t} className={chip} style={{ background: 'var(--accent-soft)' }}>
                 {t}
               </span>

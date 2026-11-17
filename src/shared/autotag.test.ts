@@ -5,6 +5,7 @@ import {
   compileTagVocab,
   findNewNames,
   findTags,
+  needsModel,
   protectedRanges,
   type TagVocabEntry
 } from './autotag'
@@ -173,5 +174,47 @@ describe('new names of other kinds, without a model', () => {
   it('does not take sentence starts or everyday words for names', () => {
     expect(kinds('Next release is in review')).toEqual([])
     expect(kinds('McDonald said hello')).toEqual([])
+  })
+})
+
+describe('well-known names and remembered corrections', () => {
+  const me = new Set(['me', 'jacob'])
+  const kinds = (s: string, k?: Record<string, string>): [string, string][] =>
+    findNewNames(s, v, me, { kinds: k }).map((x) => [x.text, x.kind])
+  it('knows places and software with no cue words around them', () => {
+    expect(kinds('Lunch near Lisbon then the Jira board')).toEqual([
+      ['Lisbon', 'place'],
+      ['Jira', 'system']
+    ])
+    expect(kinds('We flew San Francisco to New York')).toEqual([
+      ['San Francisco', 'place'],
+      ['New York', 'place']
+    ])
+  })
+  it('leaves everyday words alone', () => {
+    expect(kinds('The Teams call is on Monday about Word counts')).toEqual([])
+  })
+  it('what you corrected before beats the rules', () => {
+    expect(kinds('Ship it to Lisbon', { lisbon: 'customer' })).toEqual([['Lisbon', 'customer']])
+  })
+})
+
+describe('weak guesses are maybe-tags', () => {
+  const me = new Set(['me', 'jacob'])
+  const maybe = (s: string): boolean | undefined => findNewNames(s, v, me)[0]?.maybe
+  it('"Tell Rhea" is sure; "with Zorblax" and "in Kralupy" are guesses', () => {
+    expect(maybe('Tell Rhea about it')).toBeUndefined()
+    expect(maybe('We met with Zorblax yesterday')).toBe(true)
+    expect(maybe('Workshop in Kralupy next month')).toBe(true)
+  })
+})
+
+describe('asking the model only when the rules left something open', () => {
+  const noModel = (s: string, found: string[] = []): boolean => needsModel(s, v, found)
+  it('skips short, fully understood lines and asks for new capitalised words or topics', () => {
+    expect(noModel('Tell Matt about cats')).toBe(false)
+    expect(noModel('ok thanks')).toBe(false)
+    expect(noModel('We met Zorblax yesterday')).toBe(true)
+    expect(noModel('Ask about the rollout plan')).toBe(true)
   })
 })

@@ -6,6 +6,7 @@ import type { Db } from '../db'
 import {
   appendLine,
   ensureIdentity,
+  setFrontmatterField,
   setFrontmatterMention,
   setFrontmatterTitle,
   setTaskChecked,
@@ -30,17 +31,19 @@ import {
   type RegCategory,
   type Registry
 } from '../entities/registry'
+import { extractEntities } from '../entities/extract'
 import { buildPersonIndex, inferDue, inferOwner, type PersonIndex } from '../entities/infer'
 import {
   analyze,
   entityDossier,
+  entityId,
   listEntities,
   syncRegistryRows,
   type Dossier,
   type EntitySummary,
   type Insights
 } from '../entities/store'
-import { senderNames } from '../gmail/sync'
+import { senderCompanies, senderNames } from '../gmail/sync'
 import { formatTaskLine, parseQuickAdd, type QuickTask } from '../../shared/quickadd'
 
 export interface NoteSummary {
@@ -90,6 +93,8 @@ export interface TaskItem {
   notePath: string
   noteTitle: string
   account: string | null
+  /** What the task is about (people, companies, places, projects, systems). It is still yours. */
+  entities?: { id: string; name: string; category: string }[]
 }
 
 export type FileOutcome = 'indexed' | 'unchanged' | 'removed' | 'skipped'
@@ -250,6 +255,9 @@ export class Vault {
         if (r.category !== 'person')
           seeds.push({ category: r.category, name: r.name, terms: [r.name], inRegistry: false })
       }
+      // Companies you email, from sender domains: tagged and linked even before you list them.
+      for (const c of senderCompanies(this.db))
+        seeds.push({ category: 'customer', name: c, terms: [c], inRegistry: false })
       this.matcherCache = {
         key,
         matcher: buildMatcher(reg, this.meAliases(), seeds, this.sharedNames(reg)),
@@ -433,7 +441,7 @@ export class Vault {
    * it is tagged, and waits in Review Names until you say which one. Left out: your own names and
    * everyday words.
    */
-  tagVocabulary(): {
+  tagVocabulary(extraTopics: string[] = []): {
     id: string
     name: string
     category: string
@@ -471,7 +479,7 @@ export class Vault {
           WHERE e.category = 'topic' GROUP BY e.id HAVING n >= 1 ORDER BY n DESC LIMIT 800`
       )
       .all() as unknown as { name: string }[]
-    for (const t of topics) {
+    for (const t of [...topics, ...extraTopics.map((name) => ({ name }))]) {
       const name = t.name.trim()
       if (!name || TOPIC_STOP.has(name.toLowerCase()) || blocked(name)) continue
       out.push({
@@ -740,6 +748,16 @@ export class Vault {
     return n
   }
 
+  /** Link a meeting note to a series by hand (value is the series title), "-" to leave all series, null to undo. */
+  async setSeries(rel: string, value: string | null): Promise<void> {
+    this.assertInVault(rel)
+    await this.serial(rel, () =>
+      patchFile(this.abs(rel), (c) => setFrontmatterField(c, 'series', value))
+    )
+    await this.processFile(rel)
+    this.onChanged([rel])
+  }
+
   async setTitle(rel: string, rawTitle: string): Promise<string> {
     this.assertInVault(rel)
     const title = rawTitle.trim().slice(0, 120)
@@ -782,9 +800,20 @@ export class Vault {
       autoOwner: number
       autoDue: number
     })[]
+    const matcher = this.matcher()
     return rows
       .filter((r) => !CONFLICT_RE.test(r.notePath))
-      .map((r) => ({ ...r, isMine: !!r.isMine, autoOwner: !!r.autoOwner, autoDue: !!r.autoDue }))
+      .map((r) => ({
+        ...r,
+        isMine: !!r.isMine,
+        autoOwner: !!r.autoOwner,
+        autoDue: !!r.autoDue,
+        // Who or what the task is about: every kind of name in its wording (people, companies, places...).
+        entities: extractEntities(
+          { title: '', body: r.description, attendees: [], account: null },
+          matcher
+        ).map((e) => ({ id: entityId(e.category, e.name), name: e.name, category: e.category }))
+      }))
   }
 
   /** Change (or clear) one task's due date, straight in its source file. */

@@ -219,7 +219,8 @@ function calendar(env, p) {
         allDay: allDay,
         title: String(e.summary || '(No title)').trim(),
         status: status,
-        kind: e.eventType === 'workingLocation' ? 'working_location' : allDay ? 'allday' : 'meeting'
+        kind: e.eventType === 'workingLocation' ? 'working_location' : allDay ? 'allday' : 'meeting',
+        seriesId: e.recurringEventId || null
       })
       details.push({
         id: id,

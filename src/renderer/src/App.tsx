@@ -15,6 +15,7 @@ import CalendarView from './components/CalendarView'
 import PrepView from './components/PrepView'
 import AssistantDrawer, { type ActionReq } from './components/AssistantDrawer'
 import RollupView from './components/RollupView'
+import MeetingSeriesView from './components/MeetingSeriesView'
 import Dashboard from './components/Dashboard'
 import EntitiesManager from './components/EntitiesManager'
 import SetupGuide from './components/SetupGuide'
@@ -52,6 +53,7 @@ const PLACE: Record<string, string> = {
   calendar: 'Calendar',
   prep: 'Meeting Prep',
   rollup: 'Weekly Review',
+  series: 'Meeting Series',
   library: 'Your Notes',
   manage: 'Knowledge'
 }
@@ -88,6 +90,7 @@ type ViewName =
   | 'calendar'
   | 'prep'
   | 'rollup'
+  | 'series'
   | 'library'
   | 'manage'
 
@@ -103,6 +106,7 @@ function tabForView(v: ViewName, hasNote: boolean): Tab | null {
     case 'chat':
     case 'calendar':
     case 'rollup':
+    case 'series':
     case 'prep':
       return 'tasks'
     case 'entity':
@@ -397,6 +401,11 @@ function App(): React.JSX.Element {
     setSettingsOpen(false)
   }, [])
 
+  const openSeries = useCallback(() => {
+    setView('series')
+    setSettingsOpen(false)
+  }, [])
+
   const openEmail = useCallback(() => {
     setView('email')
     setSettingsOpen(false)
@@ -540,6 +549,7 @@ function App(): React.JSX.Element {
     { id: 'inbox', label: 'Go to inbox (what matters from meetings, email, chat)', run: openChat },
     { id: 'nudges', label: 'Go to nudges', run: openNudges },
     { id: 'rollup', label: 'Weekly Review', hint: 'this week', run: openRollup },
+    { id: 'series', label: 'Meeting Series', hint: 'repeating meetings', run: openSeries },
     { id: 'insights', label: 'Go to word map and insights', run: openInsights },
     { id: 'sync', label: 'Refresh calendar and mail', run: sync },
     {
@@ -733,6 +743,8 @@ function App(): React.JSX.Element {
           onNudges={openNudges}
           onCalendar={openCalendar}
           onRollup={openRollup}
+          onSeries={openSeries}
+          seriesActive={view === 'series' && !settingsOpen}
           calendarActive={(view === 'calendar' || view === 'prep') && !settingsOpen}
           rollupActive={view === 'rollup' && !settingsOpen}
           reviewCount={reviewCount}
@@ -881,6 +893,8 @@ function App(): React.JSX.Element {
               onFlash={flash}
               onOpenNote={open}
             />
+          ) : view === 'series' ? (
+            <MeetingSeriesView onOpenNote={open} onFlash={flash} />
           ) : view === 'rollup' ? (
             <RollupView
               onOpenNote={open}

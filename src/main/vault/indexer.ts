@@ -3,7 +3,7 @@ import { parseNote } from './parse'
 import { readMentions } from './edit'
 import { sha256 } from './ids'
 import { extractEntities } from '../entities/extract'
-import { inferDue, inferOwner, type PersonIndex } from '../entities/infer'
+import { inferDue, type PersonIndex } from '../entities/infer'
 import type { Matcher } from '../entities/registry'
 import { pruneOrphans, replaceNoteEntities } from '../entities/store'
 
@@ -74,11 +74,11 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
     // A moved/renamed file keeps its id; free up the path if another row holds it.
     db.prepare('DELETE FROM notes WHERE file_path = ? AND id <> ?').run(relPath, noteId)
     db.prepare(
-      `INSERT INTO notes (id,file_path,title,type,date,account,calendar_event_id,llm_blocked,body_text,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      `INSERT INTO notes (id,file_path,title,type,date,account,calendar_event_id,llm_blocked,body_text,series,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
        ON CONFLICT(id) DO UPDATE SET file_path=excluded.file_path,title=excluded.title,type=excluded.type,
          date=excluded.date,account=excluded.account,calendar_event_id=excluded.calendar_event_id,
-         llm_blocked=excluded.llm_blocked,body_text=excluded.body_text,updated_at=CURRENT_TIMESTAMP`
+         llm_blocked=excluded.llm_blocked,body_text=excluded.body_text,series=excluded.series,updated_at=CURRENT_TIMESTAMP`
     ).run(
       noteId,
       relPath,
@@ -88,7 +88,8 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
       account,
       eventId,
       0,
-      parsed.body
+      parsed.body,
+      typeof fm.series === 'string' && fm.series.trim() ? fm.series.trim() : null
     )
 
     // Tasks: upsert by inline id, keep assigned_at, track completion transitions, drop removed.
@@ -125,20 +126,14 @@ export function indexNote(db: Db, input: IndexInput): { noteId: string; tasks: n
         ? (prev?.completed_at ?? (prev ? new Date().toISOString() : firstSeenDone))
         : null
 
-      // Plain wording is enough: "Remind Sarah to update the firewall by Tuesday" needs no @ or due:.
+      // Plain wording is enough for the date: "... by Tuesday" needs no due:.
       // Explicit fields always win; relative dates resolve against when the note was written
       // (inbox files are dated the 1st of the month, so those use today).
-      let owner = t.owner
+      const owner = t.owner
       let due = t.due
-      let autoOwner = 0
+      const autoOwner = 0
       let autoDue = 0
-      if (!t.ownerExplicit) {
-        const o = inferOwner(t.description, input.people)
-        if (o) {
-          owner = o
-          autoOwner = 1
-        }
-      }
+      // Wording never changes the owner: "Remind Sarah to..." is your task about Sarah (linked below).
       if (!t.dueExplicit) {
         const ref = relPath.startsWith('inbox/') ? new Date() : new Date(`${noteDateIso}T12:00:00`)
         const d = inferDue(t.description, ref)

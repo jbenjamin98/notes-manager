@@ -185,7 +185,7 @@ describe('Co-Pilot', () => {
       // WE compute "next Thursday" (2026-11-19); the model's wrong date is overridden and flagged.
       expect(t1).toMatchObject({
         kind: 'task',
-        owner: 'Sarah Chen',
+        owner: 'Me',
         due: '2026-11-19',
         priority: 'High'
       })
@@ -202,16 +202,18 @@ describe('Co-Pilot', () => {
 
       const a1 = await e.assistant.apply(reply.id, 1, { due: '2026-11-21' })
       expect(a1.proposals[1]).toMatchObject({ status: 'applied', due: '2026-11-21' })
-      // Sarah's action is not my task: it is kept as a Waiting On note line.
-      expect(e.vault.listTasks().some((t) => t.description === 'Update the firewall rules')).toBe(
-        false
-      )
-      expect(listWaiting(e.db)).toMatchObject([
-        { who: 'Sarah Chen', text: 'Update the firewall rules', due: '2026-11-21' }
-      ])
+      // Sarah's action is my task to follow up, about Sarah: it is not handed to her.
+      expect(
+        e.vault
+          .listTasks()
+          .some((t) => t.description === 'Follow up with Sarah Chen: Update the firewall rules')
+      ).toBe(true)
+      expect(listWaiting(e.db)).toHaveLength(0)
       // Applying twice does nothing.
       await e.assistant.apply(reply.id, 1)
-      expect(listWaiting(e.db)).toHaveLength(1)
+      expect(
+        e.vault.listTasks().filter((t) => t.description.startsWith('Follow up with Sarah Chen'))
+      ).toHaveLength(1)
 
       const a0 = await e.assistant.apply(reply.id, 0)
       const path = (a0.proposals[0] as { appliedPath: string }).appliedPath
@@ -402,7 +404,7 @@ describe('one-click actions', () => {
       expect(reply.proposals).toHaveLength(1)
       expect(reply.proposals[0]).toMatchObject({
         kind: 'task',
-        owner: 'Sarah Chen',
+        owner: 'Me',
         due: '2026-11-13',
         status: 'pending'
       })
@@ -618,7 +620,8 @@ describe('the assistant converses (it decides what you meant)', () => {
       )
       expect(cards.proposals[0]).toMatchObject({
         kind: 'task',
-        description: 'Update firewall rules'
+        owner: 'Me',
+        description: 'Follow up with Sarah Chen: Update firewall rules'
       })
       expect(e.vault.listTasks().some((t) => t.description.includes('firewall'))).toBe(false)
     } finally {

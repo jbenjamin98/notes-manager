@@ -296,17 +296,18 @@ describe('task due edits and inbox', () => {
       const file = readFileSync(join(root, 'inbox', '2026-11.md'), 'utf8')
       expect(file.match(/^id: /gm)).toHaveLength(1) // header written once
       expect(file).toMatch(
-        /- \[ \] Send deck to Joe \| @Joe \| due:2026-11-14 \| priority:High \^t[a-z0-9]{6}/
+        /- \[ \] Send deck to Joe @Joe \| due:2026-11-14 \| priority:High \^t[a-z0-9]{6}/
       )
 
       const tasks = vault.listTasks()
       expect(tasks.map((t) => t.description).sort()).toEqual([
-        'Send deck to Joe',
+        'Send deck to Joe @Joe',
         'Think about caching'
       ])
-      const joe = tasks.find((t) => t.owner === 'Joe')!
+      const joe = tasks.find((t) => t.description.includes('@Joe'))!
       expect(joe).toMatchObject({
-        isMine: false,
+        owner: 'Me',
+        isMine: true,
         due: '2026-11-14',
         priority: 'High',
         noteTitle: 'Inbox 2026-11'

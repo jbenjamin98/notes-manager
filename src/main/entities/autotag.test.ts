@@ -46,17 +46,18 @@ describe('auto-tagging without typing @ or due:', () => {
           rows.find((t) => t.description.includes(frag))!
 
         // Owner and due date come from the sentence; "Tuesday" resolves against the NOTE's date (Fri 13 Nov).
+        // Wording never changes the owner: "Remind Sarah ..." is my task, about Sarah.
         expect(by('Remind Sarah')).toMatchObject({
-          owner: 'Sarah Chen',
-          isMine: false,
-          autoOwner: true,
+          owner: 'Me',
+          isMine: true,
+          autoOwner: false,
           due: '2026-11-17',
           autoDue: true
         })
         // An email sender is a known person too, even though nobody typed "@Priya".
         expect(by('Priya to send')).toMatchObject({
-          owner: 'Priya Nair',
-          autoOwner: true,
+          owner: 'Me',
+          autoOwner: false,
           due: '2026-11-14',
           autoDue: true
         })

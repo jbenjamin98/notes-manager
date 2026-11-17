@@ -70,7 +70,8 @@ const CalendarData = z.object({
       allDay: z.boolean(),
       title: z.string(),
       status: z.enum(['accepted', 'declined', 'tentative', 'needs_action']).nullable(),
-      kind: z.enum(['meeting', 'working_location', 'task', 'allday'])
+      kind: z.enum(['meeting', 'working_location', 'task', 'allday']),
+      seriesId: z.string().nullable().optional()
     })
   ),
   details: z.array(

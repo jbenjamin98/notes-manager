@@ -5,15 +5,29 @@ import { parseQuickAdd, formatTaskLine } from './quickadd'
 const NOW = new Date(2026, 10, 13, 9, 0, 0)
 
 describe('quick-add parsing', () => {
-  it('pulls out owner, priority, estimate and a relative date', () => {
-    expect(parseQuickAdd('Send deck to Joe tomorrow @Joe !high ~30m', NOW)).toEqual({
-      description: 'Send deck to Joe',
-      owner: 'Joe',
+  it('pulls out priority, estimate and a relative date, and keeps @tags in the text', () => {
+    expect(parseQuickAdd('Send deck for @Joe Brown tomorrow !high ~30m', NOW)).toEqual({
+      description: 'Send deck for @Joe Brown',
+      owner: 'Me',
       due: '2026-11-14',
       priority: 'High',
       estMinutes: 30,
-      ownerExplicit: true
+      ownerExplicit: false
     })
+  })
+
+  it('an @Name never makes someone else the owner (people, companies, places, systems)', () => {
+    for (const t of [
+      'Finish onboarding for @John Smith',
+      'Review contract with @Acme',
+      'Visit @Denver',
+      'Patch @Okta'
+    ])
+      expect(parseQuickAdd(t, NOW)).toMatchObject({
+        owner: 'Me',
+        ownerExplicit: false,
+        description: t
+      })
   })
 
   it('handles weekdays, dangling "by", and defaults to me', () => {

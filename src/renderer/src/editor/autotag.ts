@@ -3,9 +3,17 @@ import {
   StateEffect,
   StateField,
   Transaction,
+  Prec,
   type Extension
 } from '@codemirror/state'
-import { EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  keymap,
+  type DecorationSet,
+  type ViewUpdate
+} from '@codemirror/view'
 import { isolateHistory } from '@codemirror/commands'
 import {
   compileTagVocab,
@@ -42,7 +50,53 @@ export interface TagHooks {
   onReject(word: string): void
   /** A shared name was tagged: it is waiting in Review Names. */
   onReview?(word: string): void
+  /** A weak guess is shown as a maybe-tag: Tab accepts it, Esc ignores it. */
+  onMaybe?(labels: string[]): void
+  /** A maybe-tag you accepted with Tab. */
+  onAccepted?(labels: string[]): void
 }
+
+/** A weak guess waiting for Tab (accept) or Esc (ignore). */
+interface Maybe {
+  from: number
+  to: number
+  sigil: '@' | '#'
+  word: string
+  kind: Suggested['kind']
+}
+const addMaybes = StateEffect.define<Maybe[]>()
+const dropMaybes = StateEffect.define<(m: Maybe) => boolean>()
+
+const maybeField = StateField.define<Maybe[]>({
+  create: () => [],
+  update(list, tr) {
+    let next = list
+    if (tr.docChanged)
+      next = next
+        // Typing over a guess withdraws it.
+        .filter((m) => !tr.changes.touchesRange(m.from, m.to))
+        .map((m) => ({ ...m, from: tr.changes.mapPos(m.from, -1), to: tr.changes.mapPos(m.to, 1) }))
+    for (const e of tr.effects) {
+      if (e.is(addMaybes)) next = [...next, ...e.value]
+      else if (e.is(dropMaybes)) next = next.filter((m) => !e.value(m))
+    }
+    return next
+  },
+  provide: (f) =>
+    EditorView.decorations.from(f, (list): DecorationSet =>
+      Decoration.set(
+        [...list]
+          .sort((a, b) => a.from - b.from)
+          .map((m) =>
+            Decoration.mark({
+              class: 'cm-maybe-tag',
+              attributes: { title: `Maybe ${m.sigil}${m.word}: Tab tags it, Esc ignores it` }
+            }).range(m.from, m.to)
+          ),
+        true
+      )
+    )
+})
 
 interface Cfg {
   v: CompiledTagVocab
@@ -197,7 +251,7 @@ export function autoTagTyping(hooks: () => TagHooks | null): Extension {
       scheduleAi(enter: boolean): void {
         if (this.timer) clearTimeout(this.timer)
         const cfg = this.view.state.field(cfgField)
-        if (!cfg.enabled || !cfg.ai) return
+        if (!cfg.enabled) return
         // After a finished line (Enter), or a pause after a sentence.
         this.timer = setTimeout(() => void this.askAi(enter), enter ? 300 : 1600)
       }
@@ -207,7 +261,7 @@ export function autoTagTyping(hooks: () => TagHooks | null): Extension {
         const st = view.state
         const cfg = st.field(cfgField)
         const h = hooks()
-        if (!h || !cfg.enabled || !cfg.ai || view.composing) return
+        if (!h || !cfg.enabled || view.composing) return
         const w =
           lineBefore(st, enter) ??
           (() => {
@@ -228,10 +282,27 @@ export function autoTagTyping(hooks: () => TagHooks | null): Extension {
           this.asked.delete(text)
           return
         }
-        const placed = placeSuggested(text, tags, { ignore: cfg.ignore }).filter((p) => {
+        const allPlaced = placeSuggested(text, tags, { ignore: cfg.ignore }).filter((p) => {
           const head = now.selection.main.head - line.from
           return !(head > p.from && head <= p.to)
         })
+        // Weak guesses wait for Tab; the rest are written now.
+        const maybes = allPlaced.filter((p) => p.tag.maybe)
+        const placed = allPlaced.filter((p) => !p.tag.maybe)
+        if (maybes.length) {
+          view.dispatch({
+            effects: addMaybes.of(
+              maybes.map((p) => ({
+                from: line.from + p.from,
+                to: line.from + p.to,
+                sigil: p.sigil,
+                word: p.tag.text,
+                kind: p.tag.kind
+              }))
+            )
+          })
+          h.onMaybe?.(maybes.map((p) => `${p.sigil}${p.tag.text}`))
+        }
         if (!placed.length) return
         const names = placed
           .filter((p) => p.tag.kind !== 'topic')
@@ -256,5 +327,52 @@ export function autoTagTyping(hooks: () => TagHooks | null): Extension {
       }
     }
   )
-  return [cfgField, plugin]
+  // Tab tags the guess on this line; Esc ignores it (and it is not offered again).
+  const accept = (view: EditorView): boolean => {
+    const list = view.state.field(maybeField)
+    const line = view.state.doc.lineAt(view.state.selection.main.head)
+    const here = list.filter((m) => m.from >= line.from && m.to <= line.to)
+    if (!here.length) return false
+    const head = view.state.selection.main.head
+    const m = here.find((x) => x.to >= head) ?? here[0]
+    const names =
+      m.kind === 'topic'
+        ? []
+        : [{ name: m.word, category: m.kind as Exclude<Suggested['kind'], 'topic'> }]
+    const go = (): void => {
+      const cur = view.state.field(maybeField).find((x) => x.word === m.word && x.sigil === m.sigil)
+      if (!cur) return
+      view.dispatch({
+        changes: { from: cur.from, insert: m.sigil },
+        effects: dropMaybes.of((x) => x.word === m.word),
+        annotations: [Transaction.userEvent.of('input.autotag'), isolateHistory.of('full')]
+      })
+      const h2 = hooks()
+      if (h2?.onAccepted) h2.onAccepted([`${m.sigil}${m.word}`])
+      else h2?.onTagged([`${m.sigil}${m.word}`])
+    }
+    const h = hooks()
+    if (names.length && h) void h.learn(names).then(go, go)
+    else go()
+    return true
+  }
+  const ignore = (view: EditorView): boolean => {
+    const line = view.state.doc.lineAt(view.state.selection.main.head)
+    const here = view.state.field(maybeField).filter((m) => m.from >= line.from && m.to <= line.to)
+    if (!here.length) return false
+    for (const m of here) hooks()?.onReject(m.word)
+    view.dispatch({ effects: dropMaybes.of((m) => here.includes(m)) })
+    return true
+  }
+  return [
+    cfgField,
+    maybeField,
+    plugin,
+    Prec.highest(
+      keymap.of([
+        { key: 'Tab', run: accept },
+        { key: 'Escape', run: ignore }
+      ])
+    )
+  ]
 }

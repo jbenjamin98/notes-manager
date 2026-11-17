@@ -656,3 +656,49 @@ export class GmailSync {
     this.timer = null
   }
 }
+
+const FREE_MAIL = new Set(
+  (
+    'gmail googlemail outlook hotmail live msn yahoo icloud me mac aol proton protonmail pm gmx zoho ' +
+    'mail email fastmail hey comcast verizon att sbcglobal cox qq 163 126 yandex'
+  ).split(' ')
+)
+/** Words that make a poor company name on their own. */
+const GENERIC_DOMAIN = new Set(
+  (
+    'noreply notification notifications mailer mailchimp sendgrid amazonses calendar docs drive ' +
+    'accounts support info news mail email bounce reply no-reply post office team group online web'
+  ).split(' ')
+)
+
+/**
+ * Companies you hear from, read off sender email domains ("jo@navy-nextmro.com" -> "Navy Nextmro").
+ * Free mail providers and your own company (the domain nearly everyone shares) are left out.
+ */
+export function senderCompanies(db: Db): string[] {
+  const rows = db
+    .prepare(
+      `SELECT lower(substr(sender_email, instr(sender_email, '@') + 1)) AS d, count(*) AS n
+         FROM email_threads WHERE sender_email LIKE '%@%.%' GROUP BY d ORDER BY n DESC LIMIT 400`
+    )
+    .all() as unknown as { d: string; n: number }[]
+  const total = rows.reduce((a, r) => a + r.n, 0) || 1
+  const out: string[] = []
+  for (const r of rows) {
+    const parts = r.d.split('.')
+    const label =
+      parts.length > 2 && parts[parts.length - 2].length <= 3
+        ? parts[parts.length - 3]
+        : parts[parts.length - 2]
+    if (!label || label.length < 4 || FREE_MAIL.has(label) || GENERIC_DOMAIN.has(label)) continue
+    if (r.n / total >= 0.35) continue // most mail comes from your own company
+    out.push(
+      label
+        .split('-')
+        .filter(Boolean)
+        .map((w) => w[0].toUpperCase() + w.slice(1))
+        .join(' ')
+    )
+  }
+  return [...new Set(out)]
+}

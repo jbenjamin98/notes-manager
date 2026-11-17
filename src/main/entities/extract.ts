@@ -21,6 +21,16 @@ export interface ExtractInput {
 const MENTION = /(?<![\p{L}\p{N}_@])@([\p{L}][\p{L}\p{N}._-]*)/gu
 const HASHTAG = /(?<![\p{L}\p{N}_&#])#([\p{L}][\p{L}\p{N}_/-]*)/gu
 
+/** Capitalised words that can follow an @name without being its surname. */
+const NOT_A_SURNAME = new Set(
+  (
+    'the this that these those please thanks thank and but for from with about after before when what ' +
+    'can could will would should may might also then today tomorrow yesterday monday tuesday wednesday ' +
+    'thursday friday saturday sunday january february march april june july august september october ' +
+    'november december send ask tell remind call email check review update confirm follow'
+  ).split(' ')
+)
+
 const trimTail = (s: string): string => s.replace(/[._-]+$/, '')
 
 /**
@@ -88,7 +98,14 @@ export function extractEntities(input: ExtractInput, m: Matcher): ExtractedEntit
       ensure(known.category, known.name, known.inRegistry) // "@sarah" in any case still counts once
       continue
     }
-    add('person', token, 1, false)
+    // "@John Smith" for someone not in your lists yet: two capitalised words are one name.
+    const next = words[1] ?? ''
+    const surname =
+      /^\p{Lu}[\p{Ll}'’-]{1,24}$/u.test(next) &&
+      /^\p{Lu}/u.test(token) &&
+      !NOT_A_SURNAME.has(next.toLowerCase()) &&
+      !m.lookup.has(next.toLowerCase())
+    add('person', surname ? `${token} ${next}` : token, 1, false)
   }
 
   for (const raw of input.attendees) {

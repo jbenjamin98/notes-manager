@@ -1,6 +1,16 @@
 import { app, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { reviewQueue } from './entities/review'
-import { addWaiting, listWaiting, markReceived, ownerIsMe } from './waiting/waiting'
+import { discoverTags } from './entities/discover'
+import {
+  createMasterNote,
+  linkToSeries,
+  listSeries,
+  seriesCandidates,
+  seriesDetail,
+  startNextSession
+} from './meetings/series'
+import { compileTagVocab } from '../shared/autotag'
+import { addWaiting, listWaiting, markReceived } from './waiting/waiting'
 import { parseQuickAdd } from '../shared/quickadd'
 import { contract, type Output, type Result } from '../shared/contract'
 import { type InvokeChannel } from '../shared/channels'
@@ -161,40 +171,96 @@ export function registerIpc(ctx: Ctx): void {
     'tasks:for-note': ({ path }) => vault().tasksForNote(path),
     'tasks:list': () => vault().listTasks(),
     'tasks:quick-add': async ({ text }) => {
-      // "@Sarah send the deck" is Sarah's to do, not yours: it becomes a Waiting On note line.
-      const q = parseQuickAdd(text, new Date())
-      if (q.ownerExplicit && !ownerIsMe(q.owner, getSettings().meAliases)) {
-        if (!q.description) throw new Error('Type what they should do first.')
+      // A task is always mine; an @Name in it says who or what it is about. Only the explicit
+      // "waiting on Sarah: send the deck" form files a Waiting On note line instead.
+      const w = /^\s*waiting\s+(?:on|for)\s+@?([^:]{1,60}):\s*(.+)$/i.exec(text)
+      if (w) {
+        const q = parseQuickAdd(w[2], new Date())
+        if (!q.description) throw new Error('Type what you are waiting for first.')
+        const who = w[1].trim()
         const r = await addWaiting(
           ctx.db,
           vault(),
-          { who: q.owner, text: q.description, due: q.due },
+          { who, text: q.description, due: q.due },
           new Date()
         )
         return {
           kind: 'waiting' as const,
           path: r.path,
           description: q.description,
-          owner: q.owner,
+          owner: who,
           due: q.due
         }
       }
+      const q = parseQuickAdd(text, new Date())
       q.description = await ctx.tagger.tagOnSubmit(q.description)
       const { path, task } = await vault().appendInboxTask(q)
-      // Report what the wording told us too ("Remind Sarah to ... by Tuesday"), not just typed fields.
+      // Report a due date the wording gave too ("... by Tuesday"), not just typed fields.
       const guess = vault().previewInference(task.description)
       return {
         kind: 'task' as const,
         path,
         description: task.description,
-        owner: task.ownerExplicit || task.owner !== 'Me' ? task.owner : (guess.owner ?? 'Me'),
+        owner: 'Me',
         due: task.due ?? guess.due
       }
     },
     'tasks:set-due': ({ id, due }) => vault().setTaskDue(id, due),
     'entities:list': () => vault().listEntities(),
     'entities:vocabulary': () => vault().vocabulary() as never,
-    'tags:vocabulary': () => vault().tagVocabulary() as never,
+    'tags:vocabulary': () => vault().tagVocabulary(getSettings().autoTag.topics ?? []) as never,
+    'tags:discover': () => {
+      const s = getSettings()
+      return discoverTags(ctx.db, compileTagVocab(vault().tagVocabulary(s.autoTag.topics ?? [])), {
+        me: new Set(['me', ...s.meAliases.map((a) => a.toLowerCase())]),
+        ignore: new Set(s.autoTag.ignore),
+        kinds: s.autoTag.kinds
+      })
+    },
+    'meetings:series': () => listSeries(ctx.db, vault(), localDate()),
+    'meetings:series-detail': ({ key }) => seriesDetail(ctx.db, vault(), key, localDate()),
+    'meetings:series-next': async ({ key }) => ({
+      path: await startNextSession(ctx.db, vault(), key, localDate())
+    }),
+    'meetings:series-candidates': ({ key }) => seriesCandidates(ctx.db, key),
+    'meetings:series-link': async ({ key, path, join }) => ({
+      ok: await linkToSeries(ctx.db, vault(), path, key, join)
+    }),
+    'meetings:series-master': async ({ key }) => ({
+      path: await createMasterNote(ctx.db, vault(), key, localDate())
+    }),
+    'tags:event': ({ events }) => {
+      const ins = ctx.db.prepare('INSERT INTO tag_events (word, sigil, action) VALUES (?,?,?)')
+      for (const e of events) ins.run(e.word.toLowerCase(), e.sigil, e.action)
+      return null
+    },
+    'tags:health': () => {
+      const ignored = new Set(getSettings().autoTag.ignore.map((w) => w.toLowerCase()))
+      const rows = ctx.db
+        .prepare(
+          `SELECT word, sigil,
+                  SUM(action = 'tagged') AS tagged, SUM(action = 'accepted') AS accepted,
+                  SUM(action = 'rejected') AS rejected
+             FROM tag_events GROUP BY word, sigil
+            ORDER BY rejected DESC, tagged + accepted DESC LIMIT 200`
+        )
+        .all() as unknown as {
+        word: string
+        sigil: string
+        tagged: number
+        accepted: number
+        rejected: number
+      }[]
+      const sum = (k: 'tagged' | 'accepted' | 'rejected'): number =>
+        rows.reduce((n, r) => n + r[k], 0)
+      return {
+        words: rows.map((r) => ({ ...r, ignored: ignored.has(r.word) })),
+        tagged: sum('tagged'),
+        accepted: sum('accepted'),
+        rejected: sum('rejected')
+      }
+    },
+    'tags:usage': () => ctx.tagger.usage(),
     'tags:suggest': ({ line }) => ctx.tagger.suggest(line),
     'tags:tag-note': async ({ path }) => {
       const v = vault()
@@ -224,6 +290,9 @@ export function registerIpc(ctx: Ctx): void {
       return null
     },
     'entities:recategorize': async ({ from, to, name }) => {
+      // Remember the correction, so the same word is given this kind next time (before any rule).
+      const s = getSettings().autoTag
+      updateSettings({ autoTag: { ...s, kinds: { ...(s.kinds ?? {}), [name.toLowerCase()]: to } } })
       await vault().updateRegistry((r) =>
         from === 'topic' || from === 'event'
           ? upsertEntry(r, to, name, [])

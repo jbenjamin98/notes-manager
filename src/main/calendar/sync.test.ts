@@ -117,3 +117,15 @@ describe('CalendarSync', () => {
     expect(r).toMatchObject({ state: 'error', error: 'boom' })
   })
 })
+
+describe('calendar repeat id', () => {
+  it("keeps Google's repeat id, and an update without one does not erase it", () => {
+    const db = openDb(':memory:')
+    applyEvents(db, [ev('a', '2026-11-13', '09:00', { seriesId: 'rep1' })])
+    applyEvents(db, [ev('a', '2026-11-13', '09:00')])
+    const row = db.prepare("SELECT series_id AS s FROM calendar_events WHERE id = 'a'").get() as {
+      s: string | null
+    }
+    expect(row.s).toBe('rep1')
+  })
+})

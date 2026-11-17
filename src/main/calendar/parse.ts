@@ -13,4 +13,6 @@ export interface CalEvent {
   title: string
   status: RsvpStatus | null
   kind: EventKind
+  /** Google's id for the repeating series this event belongs to, when it repeats. */
+  seriesId?: string | null
 }

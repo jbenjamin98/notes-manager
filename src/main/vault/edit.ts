@@ -156,3 +156,22 @@ export function appendLine(content: string, line: string): string {
   const base = content.length === 0 || /(\r\n|\n|\r)$/.test(content) ? content : content + eol
   return base + line + eol
 }
+
+/** Set (or, with null, remove) a simple one-line frontmatter field, preserving everything else. */
+export function setFrontmatterField(content: string, key: string, value: string | null): string {
+  const eol = eolOf(content)
+  const lines = splitLines(content)
+  const fm = parseFrontmatter(lines)
+  if (!fm) return content
+  const at = lines
+    .slice(1, fm.endLine)
+    .findIndex((l) => l.startsWith(`${key}:`) || l.startsWith(`${key} :`))
+  if (value === null) {
+    if (at >= 0) lines.splice(at + 1, 1)
+    return lines.join('')
+  }
+  const line = `${key}: ${JSON.stringify(value)}${eol}`
+  if (at >= 0) lines[at + 1] = line
+  else lines.splice(fm.endLine, 0, line)
+  return lines.join('')
+}

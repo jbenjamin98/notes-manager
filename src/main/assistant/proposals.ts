@@ -99,10 +99,20 @@ const clean = (s: string): string => s.replace(/\|/g, '/').replace(/\s+/g, ' ').
 
 type TaskP = Extract<Proposal, { kind: 'task' }>
 
+/** "Send the deck" for Sarah becomes "Follow up with Sarah: send the deck" (unless it names her already). */
+export function involve(description: string, who: string | null): string {
+  if (!who || description.toLowerCase().includes(who.toLowerCase().split(' ')[0]))
+    return description
+  return `Follow up with ${who}: ${description}`
+}
+
 export function resolveTask(t: z.infer<typeof LlmTask>, ctx: ResolveCtx): TaskP {
+  // A task is always yours. If the model says someone else should do it, that person is who it is
+  // about ("Follow up with Sarah: send the deck"), not its owner.
   const rawOwner = (t.owner ?? '').trim().replace(/^@/, '')
   const isMe = !rawOwner || ctx.meNames.has(rawOwner.toLowerCase())
-  const owner = isMe ? 'Me' : (ctx.people.lookup.get(rawOwner.toLowerCase()) ?? rawOwner)
+  const about = isMe ? null : (ctx.people.lookup.get(rawOwner.toLowerCase()) ?? rawOwner)
+  const owner = 'Me'
 
   // The model quotes the phrase; WE compute the date. If it also gave a date and they disagree, say so.
   const fromPhrase = t.due_phrase ? dayFromPhrase(t.due_phrase, ctx.now) : null
@@ -116,9 +126,9 @@ export function resolveTask(t: z.infer<typeof LlmTask>, ctx: ResolveCtx): TaskP 
   }
   return {
     kind: 'task',
-    description: clean(t.description).slice(0, 200),
+    description: involve(clean(t.description), about).slice(0, 200),
     owner,
-    ownerExplicit: !isMe || !!rawOwner,
+    ownerExplicit: false,
     due,
     dueNote,
     priority: normPriority(t.priority),
@@ -216,15 +226,10 @@ export function resolveCapture(out: CaptureOut, ctx: ResolveCtx): Proposal[] {
 }
 
 /** Fields the user may change on a card before applying. Everything else is ignored. */
-export function mergeEdits(
-  p: Proposal,
-  edits: Record<string, unknown> | undefined,
-  ctx: ResolveCtx
-): Proposal {
+export function mergeEdits(p: Proposal, edits: Record<string, unknown> | undefined): Proposal {
   if (!edits) return p
   const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
   if (p.kind === 'task') {
-    const owner = str(edits.owner)?.trim().replace(/^@/, '')
     const due = edits.due === null ? null : str(edits.due)
     const prio = edits.priority === null ? null : normPriority(str(edits.priority))
     return {
@@ -232,15 +237,6 @@ export function mergeEdits(
       description: str(edits.description)
         ? clean(str(edits.description)!).slice(0, 200)
         : p.description,
-      ...(owner !== undefined
-        ? {
-            owner:
-              !owner || ctx.meNames.has(owner.toLowerCase())
-                ? 'Me'
-                : (ctx.people.lookup.get(owner.toLowerCase()) ?? owner),
-            ownerExplicit: true
-          }
-        : {}),
       ...(due !== undefined
         ? { due: due === null || /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : p.due, dueNote: null }
         : {}),

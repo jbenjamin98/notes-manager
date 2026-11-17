@@ -37,6 +37,8 @@ interface Props {
   mailAttention: number
   onCalendar: () => void
   onRollup: () => void
+  onSeries: () => void
+  seriesActive: boolean
   calendarActive: boolean
   rollupActive: boolean
   reviewCount: number
@@ -309,7 +311,9 @@ function TaskLists({
   onCalendar,
   calendarActive,
   onRollup,
-  rollupActive
+  rollupActive,
+  onSeries,
+  seriesActive
 }: {
   tasks: TaskItem[]
   active: TaskFilter | null
@@ -324,6 +328,8 @@ function TaskLists({
   calendarActive: boolean
   onRollup: () => void
   rollupActive: boolean
+  onSeries: () => void
+  seriesActive: boolean
 }): React.JSX.Element {
   const today = todayIso()
   const c = countFilters(tasks, today)
@@ -366,6 +372,9 @@ function TaskLists({
       </Row>
       <Row active={calendarActive} onClick={onCalendar}>
         <span className="min-w-0 flex-1 truncate">Calendar</span>
+      </Row>
+      <Row active={seriesActive} onClick={onSeries}>
+        <span className="min-w-0 flex-1 truncate">Meeting Series</span>
       </Row>
       <Row active={rollupActive} onClick={onRollup}>
         <span className="min-w-0 flex-1 truncate">Weekly Review</span>
@@ -483,6 +492,8 @@ export default function Sidebar(props: Props): React.JSX.Element {
             onCalendar={props.onCalendar}
             calendarActive={props.calendarActive}
             onRollup={props.onRollup}
+            onSeries={props.onSeries}
+            seriesActive={props.seriesActive}
             rollupActive={props.rollupActive}
             chatCount={props.chatCount}
           />

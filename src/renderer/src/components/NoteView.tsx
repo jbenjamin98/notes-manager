@@ -153,8 +153,17 @@ export default function NoteView({
 
   // What the editor needs to write @ and # as you type: the model's help for new things, and a
   // memory of tags you took off.
-  const tagHooks = useMemo<TagHooks>(
-    () => ({
+  const tagHooks = useMemo<TagHooks>(() => {
+    // Tag Health: what happened to each automatic tag (kept, accepted from a maybe, taken off).
+    const record = (labels: string[], action: 'tagged' | 'accepted' | 'rejected'): void => {
+      const events = labels.map((l) => ({
+        word: l.slice(1),
+        sigil: l[0] === '#' ? ('#' as const) : ('@' as const),
+        action
+      }))
+      void window.api.invoke('tags:event', { events })
+    }
+    return {
       suggest: async (line) => {
         const r = await window.api.invoke('tags:suggest', { line })
         return r.ok ? r.data.tags : []
@@ -166,8 +175,18 @@ export default function NoteView({
         onFlash?.(
           `Tagged @${word}. More than one thing has that name, so it is waiting in Review Names.`
         ),
-      onTagged: (labels) => onFlash?.(`Tagged ${labels.join(', ')}. Ctrl+Z undoes it.`),
+      onTagged: (labels) => {
+        onFlash?.(`Tagged ${labels.join(', ')}. Ctrl+Z undoes it.`)
+        record(labels, 'tagged')
+      },
+      onAccepted: (labels) => {
+        onFlash?.(`Tagged ${labels.join(', ')}.`)
+        record(labels, 'accepted')
+      },
+      onMaybe: (labels) =>
+        onFlash?.(`Maybe ${labels.join(', ')}. Press Tab to tag it, or Esc to ignore it.`),
       onReject: (word) => {
+        record([`@${word}`], 'rejected')
         void window.api.invoke('settings:get').then((s) => {
           if (!s.ok) return
           const w = word.toLowerCase()
@@ -177,9 +196,8 @@ export default function NoteView({
           })
         })
       }
-    }),
-    [onFlash]
-  )
+    }
+  }, [onFlash])
 
   // Initial load (component is keyed by path, so this runs once per note).
   useEffect(() => {

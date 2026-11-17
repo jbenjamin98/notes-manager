@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Output } from '@shared/contract'
 import { shortDate } from '../format'
 import EmptyState from './EmptyState'
+import SuggestedTags from './SuggestedTags'
 
 type Group = Output<'names:review'>[number]
 
@@ -84,10 +85,13 @@ export default function ReviewPeople({
   if (groups === null) return <p className="px-2 py-6 text-sm text-muted">Looking for names…</p>
   if (groups.length === 0)
     return (
-      <EmptyState
-        title="Every name is sorted"
-        body="When two things share a name (two Jacobs, or Acme Corp and Acme Labs), notes that only say “Jacob” or “Acme” appear here so you can say which one."
-      />
+      <div className="space-y-5">
+        <EmptyState
+          title="Every name is sorted"
+          body="When two things share a name (two Jacobs, or Acme Corp and Acme Labs), notes that only say “Jacob” or “Acme” appear here so you can say which one."
+        />
+        <SuggestedTags onFlash={onFlash} />
+      </div>
     )
 
   return (
@@ -231,6 +235,7 @@ export default function ReviewPeople({
           </section>
         )
       })}
+      <SuggestedTags onFlash={onFlash} />
     </div>
   )
 }

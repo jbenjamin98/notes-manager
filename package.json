@@ -21,7 +21,8 @@
     "build:win": "node scripts/check-google-client.cjs && npm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux",
-    "build:win:script-only": "node scripts/check-google-client.cjs --allow-missing && npm run build && electron-builder --win"
+    "build:win:script-only": "node scripts/check-google-client.cjs --allow-missing && npm run build && electron-builder --win",
+    "art:installer": "electron scripts/make-installer-art.cjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

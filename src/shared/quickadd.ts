@@ -4,8 +4,11 @@ import * as chrono from 'chrono-node'
  * Deterministic quick-add parsing (no LLM). Shared by the renderer (live preview
  * chips while typing) and the main process (authoritative parse on submit).
  *
- *   "Send deck to Joe tomorrow @Joe !high ~30m"
- *   -> { description: "Send deck to Joe", owner: "Joe", due: <tomorrow>, priority: "High", estMinutes: 30 }
+ *   "Send deck for @Joe Brown tomorrow !high ~30m"
+ *   -> { description: "Send deck for @Joe Brown", owner: "Me", due: <tomorrow>, priority: "High", estMinutes: 30 }
+ *
+ * A task is always yours. An @Name in it says who or what it is about (a person, company, place,
+ * project or system); it stays in the description as a tag and never changes the owner.
  */
 export interface QuickTask {
   description: string
@@ -13,7 +16,7 @@ export interface QuickTask {
   due: string | null
   priority: 'High' | 'Medium' | 'Low' | null
   estMinutes: number | null
-  /** The user typed an @owner. When false and the owner is "Me", nothing is written so the wording can decide. */
+  /** Always false for new tasks: the owner is you, whoever the task is about. */
   ownerExplicit?: boolean
 }
 
@@ -32,8 +35,8 @@ const PRIORITY: Record<string, 'High' | 'Medium' | 'Low'> = {
 
 export function parseQuickAdd(input: string, now: Date = new Date()): QuickTask {
   let text = ` ${input} `
-  let owner = 'Me'
-  let ownerExplicit = false
+  const owner = 'Me'
+  const ownerExplicit = false
   let priority: QuickTask['priority'] = null
   let estMinutes: number | null = null
   let due: string | null = null
@@ -46,10 +49,6 @@ export function parseQuickAdd(input: string, now: Date = new Date()): QuickTask 
     }
   }
 
-  take(/\s@([\w.-]+)(?=\s)/, (m) => {
-    owner = m[1]
-    ownerExplicit = true
-  })
   take(/\s!(high|medium|med|low|h|m|l)(?=\s)/i, (m) => (priority = PRIORITY[m[1].toLowerCase()]))
   take(/\s~(?:(\d+)h)?(?:(\d+)m)?(?=\s)/i, (m) => {
     const mins = Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)

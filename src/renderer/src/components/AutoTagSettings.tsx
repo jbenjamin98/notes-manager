@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import TagHealth from './TagHealth'
 
 interface Cfg {
   enabled: boolean
@@ -10,10 +11,12 @@ interface Cfg {
 export default function AutoTagSettings(): React.JSX.Element {
   const [cfg, setCfg] = useState<Cfg | null>(null)
   const [word, setWord] = useState('')
+  const [usage, setUsage] = useState<{ today: number; cap: number } | null>(null)
 
   useEffect(() => {
     let alive = true
     void window.api.invoke('settings:get').then((r) => alive && r.ok && setCfg(r.data.autoTag))
+    void window.api.invoke('tags:usage').then((r) => alive && r.ok && setUsage(r.data))
     const off = window.api.on('settings:changed', (s) => alive && setCfg(s.autoTag))
     return () => {
       alive = false
@@ -62,7 +65,13 @@ export default function AutoTagSettings(): React.JSX.Element {
           <span className="block text-xs text-muted">
             After you finish a line, a small model suggests up to four topics and five names that
             are not in your lists yet. It leans toward tagging too much rather than too little. Only
-            that line is sent. New names are added to your lists.
+            that line is sent. New names are added to your lists. It is only asked when the rules
+            could not work something out.
+            {usage && (
+              <span data-testid="tag-usage" className="mt-1 block">
+                AI calls today: {usage.today} of {usage.cap}
+              </span>
+            )}
           </span>
         </span>
       </label>
@@ -113,6 +122,7 @@ export default function AutoTagSettings(): React.JSX.Element {
           </button>
         </form>
       </div>
+      <TagHealth />
     </>
   )
 }

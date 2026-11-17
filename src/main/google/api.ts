@@ -126,6 +126,7 @@ interface ApiEvent {
   status?: string
   summary?: string
   eventType?: string
+  recurringEventId?: string
   hangoutLink?: string
   attachments?: { fileId?: string; title?: string; mimeType?: string }[]
   start?: { date?: string; dateTime?: string }
@@ -197,7 +198,9 @@ export async function fetchCalendar(
         allDay,
         title: (e.summary ?? '(No title)').trim(),
         status,
-        kind: e.eventType === 'workingLocation' ? 'working_location' : allDay ? 'allday' : 'meeting'
+        kind:
+          e.eventType === 'workingLocation' ? 'working_location' : allDay ? 'allday' : 'meeting',
+        seriesId: e.recurringEventId ?? null
       })
       for (const f of e.attachments ?? [])
         if (f.fileId && (!f.mimeType || f.mimeType === 'application/vnd.google-apps.document'))

@@ -80,9 +80,13 @@ export const SettingsSchema = z.object({
       /** Let a small AI model also find new topics and names. */
       ai: z.boolean().default(true),
       /** Lowercase words never to tag. */
-      ignore: z.array(z.string().max(60)).max(500).default([])
+      ignore: z.array(z.string().max(60)).max(500).default([]),
+      /** What you said a name is (lowercase name -> kind), remembered from corrections. */
+      kinds: z.record(z.string().max(60), z.string().max(20)).default({}),
+      /** Topics you accepted from Suggested Tags: tagged even before a note uses them. */
+      topics: z.array(z.string().max(60)).max(500).default([])
     })
-    .default({ enabled: true, ai: true, ignore: [] }),
+    .default({ enabled: true, ai: true, ignore: [], kinds: {}, topics: [] }),
   /** Global quick-capture window (works from any app). */
   quickCapture: z
     .object({
@@ -306,7 +310,9 @@ const TaskItem = TaskRow.extend({
   completedAt: z.string().nullable(),
   notePath: z.string(),
   noteTitle: z.string(),
-  account: z.string().nullable()
+  account: z.string().nullable(),
+  /** The people, companies, places, projects and systems the task is about (it is still yours). */
+  entities: z.array(z.object({ id: z.string(), name: z.string(), category: z.string() })).optional()
 })
 export type TaskItem = z.infer<typeof TaskItem>
 
@@ -862,7 +868,8 @@ export const contract = {
         z.object({
           /** The exact words in the line. */
           text: z.string(),
-          kind: z.enum(['topic', 'person', 'customer', 'project', 'system', 'place'])
+          kind: z.enum(['topic', 'person', 'customer', 'project', 'system', 'place']),
+          maybe: z.boolean().optional()
         })
       ),
       via: z.enum(['llm', 'rules', 'none'])
@@ -873,6 +880,55 @@ export const contract = {
   'tags:tag-note': {
     input: z.object({ path: z.string() }),
     output: z.object({ count: z.number(), before: z.string().nullable() })
+  },
+  /** Names and topics that keep coming up but are not tagged yet (counted, no model). */
+  'tags:discover': {
+    input: z.void(),
+    output: z.array(
+      z.object({
+        text: z.string(),
+        kind: z.enum(['topic', 'person', 'customer', 'project', 'system', 'place']),
+        notes: z.number(),
+        example: z.string()
+      })
+    )
+  },
+  'tags:usage': {
+    input: z.void(),
+    output: z.object({ today: z.number(), cap: z.number() })
+  },
+  /** What happened to automatic tags (kept, accepted from a maybe, taken off). */
+  'tags:event': {
+    input: z.object({
+      events: z
+        .array(
+          z.object({
+            word: z.string().min(1).max(80),
+            sigil: z.enum(['@', '#']),
+            action: z.enum(['tagged', 'accepted', 'rejected'])
+          })
+        )
+        .max(50)
+    }),
+    output: z.null()
+  },
+  'tags:health': {
+    input: z.void(),
+    output: z.object({
+      words: z.array(
+        z.object({
+          word: z.string(),
+          sigil: z.string(),
+          tagged: z.number(),
+          accepted: z.number(),
+          rejected: z.number(),
+          ignored: z.boolean()
+        })
+      ),
+      tagged: z.number(),
+      accepted: z.number(),
+      rejected: z.number()
+    })
   },
   'tags:learn': {
     input: z.object({
@@ -1003,6 +1059,83 @@ export const contract = {
   'calendar:sync': { input: z.void(), output: CalendarStatus },
   'calendar:upcoming': { input: z.void(), output: z.array(UpcomingEvent) },
   'calendar:open-event': { input: z.object({ id: z.string() }), output: NotePath },
+  /** Meetings held again and again, each session still its own note. */
+  'meetings:series': {
+    input: z.void(),
+    output: z.array(
+      z.object({
+        key: z.string(),
+        title: z.string(),
+        sessions: z.number(),
+        lastDate: z.string(),
+        nextDate: z.string().nullable(),
+        openActions: z.number()
+      })
+    )
+  },
+  'meetings:series-detail': {
+    input: z.object({ key: z.string().min(1).max(200) }),
+    output: z
+      .object({
+        key: z.string(),
+        title: z.string(),
+        account: z.string().nullable(),
+        attendees: z.array(z.string()),
+        sessions: z.array(
+          z.object({
+            date: z.string(),
+            title: z.string(),
+            path: z.string().nullable(),
+            eventId: z.string().nullable(),
+            status: z.enum(['notes', 'scheduled', 'no-notes'])
+          })
+        ),
+        carried: z.array(
+          z.object({
+            id: z.string(),
+            description: z.string(),
+            due: z.string().nullable(),
+            date: z.string(),
+            path: z.string()
+          })
+        ),
+        decisions: z.array(z.object({ text: z.string(), date: z.string(), path: z.string() })),
+        questions: z.array(z.object({ text: z.string(), date: z.string(), path: z.string() })),
+        threads: z.array(
+          z.object({
+            name: z.string(),
+            category: z.string(),
+            sessions: z.number(),
+            lines: z.array(z.object({ text: z.string(), date: z.string(), path: z.string() }))
+          })
+        )
+      })
+      .nullable()
+  },
+  /** Meeting notes that could be added to a series. */
+  'meetings:series-candidates': {
+    input: z.object({ key: z.string().min(1).max(200) }),
+    output: z.array(z.object({ path: z.string(), title: z.string(), date: z.string() }))
+  },
+  /** Put a meeting note into a series by hand (join), or take it out of every series. */
+  'meetings:series-link': {
+    input: z.object({
+      key: z.string().min(1).max(200),
+      path: z.string().min(1),
+      join: z.boolean()
+    }),
+    output: z.object({ ok: z.boolean() })
+  },
+  /** A normal note that gathers the series: sessions, decisions, open questions. */
+  'meetings:series-master': {
+    input: z.object({ key: z.string().min(1).max(200) }),
+    output: z.object({ path: z.string() })
+  },
+  /** Open the next session's note, with last time's open questions and actions listed. */
+  'meetings:series-next': {
+    input: z.object({ key: z.string().min(1).max(200) }),
+    output: z.object({ path: z.string() })
+  },
   'prep:get': {
     input: z.object({
       eventId: z.string(),

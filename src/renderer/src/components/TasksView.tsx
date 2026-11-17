@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import WaitingView from './WaitingView'
 import { useWaiting } from '../hooks'
 import SourceChip from './SourceChip'
+import CategoryIcon, { type CategoryKind } from './CategoryIcon'
 import type { TaskItem } from '@shared/contract'
 import { parseQuickAdd } from '@shared/quickadd'
 import { shortDate, todayIso } from '../format'
@@ -47,8 +48,8 @@ function QuickAdd({
 
   const placeholder =
     filter === 'waiting'
-      ? 'Ask Sarah for the firewall update by Friday @Sarah'
-      : 'Add a task…  e.g. Send deck to Joe tomorrow @Joe !high'
+      ? 'waiting on Sarah: the firewall update by Friday'
+      : 'Add a task…  e.g. Send the deck for @Acme tomorrow !high'
 
   const submit = async (): Promise<void> => {
     if (!parsed?.description || busy) return
@@ -57,7 +58,7 @@ function QuickAdd({
     setBusy(false)
     if (!r.ok) return onFlash(r.error.message)
     setText('')
-    const who = r.data.owner !== 'Me' ? ` for @${r.data.owner}` : ''
+    const who = r.data.kind === 'waiting' ? ` to Waiting On (${r.data.owner})` : ''
     onFlash(`Added${who}${r.data.due ? ` · due ${shortDate(r.data.due)}` : ''}`)
   }
 
@@ -74,7 +75,6 @@ function QuickAdd({
       <div className="mt-2 flex min-h-6 flex-wrap items-center gap-1.5">
         {parsed?.description ? (
           <>
-            {parsed.owner !== 'Me' && <Chip>@{parsed.owner}</Chip>}
             {parsed.due && <Chip>Due {shortDate(parsed.due)}</Chip>}
             {parsed.priority && <Chip>{parsed.priority} priority</Chip>}
             {parsed.estMinutes && <Chip>{parsed.estMinutes} min</Chip>}
@@ -82,8 +82,8 @@ function QuickAdd({
           </>
         ) : (
           <span className="text-xs text-muted">
-            Use <b>@name</b> to assign, <b>!high</b> for priority, <b>~30m</b> for effort. Dates
-            like “tomorrow” or “next Thursday” just work.
+            Tasks are always yours: <b>@name</b> says who or what one is about, <b>!high</b> sets
+            priority, <b>~30m</b> effort. Dates like “tomorrow” just work.
           </span>
         )}
       </div>
@@ -224,6 +224,20 @@ function Row({
             className="mr-2 mb-0.5"
           />
         )}
+        {(task.entities?.length ?? 0) > 0 && (
+          <div className="mt-0.5 flex flex-wrap gap-1" aria-label="This task is about">
+            {task.entities!.slice(0, 5).map((e) => (
+              <span
+                key={e.id}
+                title={`About ${e.name}`}
+                className="flex items-center gap-1 rounded-full bg-hover py-px pr-2 pl-0.5 text-[11px] text-muted"
+              >
+                <CategoryIcon kind={e.category as CategoryKind} size={14} />
+                {e.name}
+              </span>
+            ))}
+          </div>
+        )}
         <button
           onClick={() => onOpenNote(task.notePath)}
           className="max-w-full truncate text-left text-xs text-muted hover:text-accent hover:underline"
@@ -272,12 +286,21 @@ function Row({
   )
 }
 
+const ABOUT_LABEL: Record<string, string> = {
+  person: 'People',
+  customer: 'Companies',
+  project: 'Projects',
+  system: 'Systems',
+  place: 'Places',
+  topic: 'Topics'
+}
+
 const EMPTY: Record<string, string> = {
   mine: 'Nothing on your plate. Add a task above, or write one in a note.',
   today: 'Nothing due today.',
   overdue: 'Nothing overdue. Nice.',
   waiting:
-    'You are not waiting on anyone. When someone else owns an action (@Sarah …), it is saved here as a note.',
+    'You are not waiting on anyone. Type “waiting on Sarah: …” in Quick Add to save one here as a note.',
   done: 'Completed tasks from the last 30 days appear here.'
 }
 
@@ -297,7 +320,27 @@ export default function TasksView({
   onFlash: (m: string) => void
 }): React.JSX.Element {
   const today = todayIso()
-  const shown = useMemo(() => applyFilter(tasks, filter, today), [tasks, filter, today])
+  // "About": only tasks that concern a kind of thing (people, companies...) or one name.
+  const [about, setAbout] = useState('')
+  const base = useMemo(() => applyFilter(tasks, filter, today), [tasks, filter, today])
+  const shown = useMemo(
+    () =>
+      !about
+        ? base
+        : base.filter((t) =>
+            (t.entities ?? []).some((e) =>
+              about.startsWith('cat:') ? e.category === about.slice(4) : e.id === about.slice(4)
+            )
+          ),
+    [base, about]
+  )
+  const aboutOptions = useMemo(() => {
+    const seen = new Map<string, { id: string; name: string; category: string }>()
+    for (const t of base) for (const e of t.entities ?? []) seen.set(e.id, e)
+    const byCat = new Map<string, { id: string; name: string; category: string }[]>()
+    for (const e of seen.values()) byCat.set(e.category, [...(byCat.get(e.category) ?? []), e])
+    return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [base])
   const groups: Group[] = useMemo(() => {
     if (filter === 'waiting') return groupByOwner(shown)
     if (filter === 'done') return groupByCompleted(shown)
@@ -317,6 +360,32 @@ export default function TasksView({
         </p>
       </header>
       {filter !== 'done' && <QuickAdd filter={filter} onFlash={onFlash} />}
+      {aboutOptions.length > 0 && (
+        <div className="flex items-center gap-2 px-6 pb-2 text-xs text-muted">
+          <label htmlFor="tasks-about">About</label>
+          <select
+            id="tasks-about"
+            data-testid="tasks-about"
+            value={about}
+            onChange={(e) => setAbout(e.target.value)}
+            className="rounded-lg border border-line bg-field px-2 py-1 text-xs text-fg"
+          >
+            <option value="">Anything</option>
+            {aboutOptions.map(([cat, list]) => (
+              <optgroup key={cat} label={ABOUT_LABEL[cat] ?? cat}>
+                <option value={`cat:${cat}`}>All {(ABOUT_LABEL[cat] ?? cat).toLowerCase()}</option>
+                {list
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((e) => (
+                    <option key={e.id} value={`ent:${e.id}`}>
+                      {e.name}
+                    </option>
+                  ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10">
         {filter === 'waiting' && <WaitingView onOpenNote={onOpenNote} onFlash={onFlash} />}
