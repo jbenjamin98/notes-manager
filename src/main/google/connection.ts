@@ -30,6 +30,8 @@ export interface Connection {
 
 export interface ConnInputs {
   apiActive: boolean
+  /** The Google sign-in was revoked or expired and the user has not signed in again yet. */
+  apiRevoked?: boolean
   apiEmail: string | null
   bridgeUrl: string
   hasToken: boolean
@@ -42,7 +44,8 @@ const QUOTA = /quota|rate.?limit|slow(ing)? down|try again in a minute|busy/i
 
 export function connectionState(i: ConnInputs): Connection {
   const lastSyncAt = [i.cal.lastSyncAt, i.mail.lastSyncAt].filter(Boolean).sort().pop() ?? null
-  const source = i.apiActive ? 'api' : i.bridgeUrl.trim() ? 'bridge' : 'none'
+  const revoked = !!i.apiRevoked && !i.apiActive
+  const source = i.apiActive || revoked ? 'api' : i.bridgeUrl.trim() ? 'bridge' : 'none'
   const email = i.apiActive ? i.apiEmail : (i.selfTest?.email ?? null)
   const base = { source, email, lastSyncAt } as const
   const r = (
@@ -90,6 +93,15 @@ export function connectionState(i: ConnInputs): Connection {
         'Copy Script Again'
       )
   }
+
+  if (revoked)
+    return r(
+      'needs-login',
+      'Sign in to Google',
+      'Your Google sign-in has expired. Sign in again; your data is kept meanwhile.',
+      'sign-in',
+      'Sign In to Google'
+    )
 
   const states = [i.cal.state, i.mail.state]
   if (states.includes('syncing')) return r('syncing', 'Syncing…', 'Reading your calendar and mail.')

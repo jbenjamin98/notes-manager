@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useFocusTrap } from '../useFocusTrap'
+import ConfirmButton from './ConfirmButton'
+import Modal from './Modal'
 
 export type RegCat = 'person' | 'customer' | 'system' | 'project' | 'place'
 
@@ -35,10 +36,7 @@ export default function EntityEditor({
   const [name, setName] = useState(value.name)
   const [aliases, setAliases] = useState(value.aliases.join(', '))
   const [err, setErr] = useState<string | null>(null)
-  const [confirmRemove, setConfirmRemove] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
-  const dialog = useRef<HTMLFormElement>(null)
-  useFocusTrap(dialog, onCancel)
   useEffect(() => nameRef.current?.focus(), [])
   const editing = value.originalName !== undefined
 
@@ -60,19 +58,13 @@ export default function EntityEditor({
 
   const field = 'mt-1 w-full rounded-lg border border-line bg-field px-3 py-2 text-sm'
   return (
-    <div
-      className="fixed inset-0 z-10 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onKeyDown={(e) => e.key === 'Escape' && onCancel()}
+    <Modal
+      label={editing ? 'Edit names' : 'Add to your list'}
+      onClose={onCancel}
+      className="w-[26rem] rounded-2xl"
+      style={{ background: 'var(--sticky)' }}
     >
-      <form
-        onSubmit={(e) => void submit(e)}
-        ref={dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-label={editing ? 'Edit names' : 'Add to your list'}
-        className="glass w-[26rem] rounded-2xl p-5"
-        style={{ background: 'var(--sticky)' }}
-      >
+      <form onSubmit={(e) => void submit(e)} className="p-5">
         <h2 className="mb-3 text-lg font-semibold">
           {editing ? 'Edit' : 'Add a person, account or system'}
         </h2>
@@ -122,13 +114,12 @@ export default function EntityEditor({
         {err && <p className="mt-2 text-sm text-danger">{err}</p>}
         <div className="mt-4 flex items-center gap-2">
           {editing && onRemove && (
-            <button
-              type="button"
-              onClick={() => (confirmRemove ? void onRemove(value) : setConfirmRemove(true))}
+            <ConfirmButton
+              label="Remove"
+              confirmLabel="Click again to remove"
+              onConfirm={() => void onRemove(value)}
               className="rounded-lg px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
-            >
-              {confirmRemove ? 'Click again to remove' : 'Remove'}
-            </button>
+            />
           )}
           <span className="flex-1" />
           <button
@@ -146,6 +137,6 @@ export default function EntityEditor({
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   )
 }

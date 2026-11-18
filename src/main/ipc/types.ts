@@ -12,6 +12,7 @@ import { type SecretStore } from '../services/secrets'
 import { type CaptureWindow } from '../capture'
 import { type GoogleConnector } from '../google/connector'
 import { BridgeClient } from '../google/bridge'
+import type { GoogleHub } from '../google/hub'
 
 export interface Ctx {
   tagger: import('../assistant/autotag').AutoTagger
@@ -28,6 +29,8 @@ export interface Ctx {
   capture: CaptureWindow
   google: GoogleConnector
   bridge: BridgeClient
+  /** Picks OAuth or the script for each read; also runs the Meet and Chat sync. */
+  hub: GoogleHub
   /** Read what changed in chat/meetings/mail for insights; returns how many were new. */
   runInsights: () => Promise<number>
   notifyStatus: () => { supported: boolean; shown: boolean; error: string | null }

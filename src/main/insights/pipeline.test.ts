@@ -166,6 +166,47 @@ describe('insight pipeline', () => {
     expect(listInsights(db2).some((i) => i.kind === 'action')).toBe(true)
   })
 
+  it('postpones, not downgrades, when the AI has no headroom or the run cap is spent', async () => {
+    const text =
+      'Sarah will send the plan by Friday. Honestly I would keep it simple and take the first one for the rollout, everyone nodded.'
+    const meeting = (id: string): Parameters<typeof insightsFromMeeting>[1] => ({
+      eventId: null,
+      title: 'T',
+      date: '2026-11-12',
+      notePath: null,
+      fileId: id,
+      text
+    })
+    let calls = 0
+    const llm: JsonGenerator = {
+      generateJson: (async () => {
+        calls++
+        return { data: { items: [] }, provider: 'gemini', model: 'x', cached: false }
+      }) as JsonGenerator['generateJson']
+    }
+
+    // No headroom: nothing is asked, saved or marked read.
+    const db = openDb(':memory:')
+    const stats = { deferred: 0 }
+    const waiting = { ...deps(db, llm), headroom: () => false, stats }
+    expect(await insightsFromMeeting(waiting, meeting('M1'))).toBe(0)
+    expect(calls).toBe(0)
+    expect(stats.deferred).toBe(1)
+    expect(listInsights(db)).toHaveLength(0)
+
+    // Later, with room, the same source is read (it was never marked as read).
+    await insightsFromMeeting({ ...deps(db, llm), headroom: () => true }, meeting('M1'))
+    expect(calls).toBe(1)
+    expect(listInsights(db).length).toBeGreaterThan(0)
+
+    // The per-run cap: the second source waits for the next run.
+    const capped = { ...deps(db, llm), modelRuns: { left: 1 }, stats: { deferred: 0 } }
+    await insightsFromMeeting(capped, meeting('M2'))
+    await insightsFromMeeting(capped, meeting('M3'))
+    expect(calls).toBe(2)
+    expect(capped.stats.deferred).toBe(1)
+  })
+
   it('merging keeps model items and adds only confident rule items the model missed', () => {
     const c = (kind: 'action' | 'risk', text: string, confidence: number): Candidate => ({
       kind,

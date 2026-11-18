@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { navReset, navRestore, navSnapshot, subscribeNav } from './nav'
+import { navSet, navReset, navRestore, navSnapshot, subscribeNav } from './nav'
 import { ArrowLeftIcon } from './components/Icons'
 import Sidebar, { type Tab } from './components/Sidebar'
 import NoteView from './components/NoteView'
@@ -7,11 +7,8 @@ import Settings from './components/Settings'
 import TasksDashboard from './components/TasksDashboard'
 import TasksView from './components/TasksView'
 import ActionsPage from './components/ActionsPage'
-import FactsPage from './components/FactsPage'
 import EntityView from './components/EntityView'
 import InsightsView from './components/InsightsView'
-import EmailView from './components/EmailView'
-import InboxView from './components/InboxView'
 import NudgesView from './components/NudgesView'
 import CalendarView from './components/CalendarView'
 import PrepView from './components/PrepView'
@@ -23,6 +20,8 @@ import EntitiesManager from './components/EntitiesManager'
 import SetupGuide from './components/SetupGuide'
 import HomeView from './components/HomeView'
 import NewNoteModal from './components/NewNoteModal'
+import Toast, { type ToastData } from './components/Toast'
+import ShortcutsDialog from './components/ShortcutsDialog'
 import Confetti from './components/Confetti'
 import { useAmbient } from './ambient'
 import CommandPalette, { type PaletteAction } from './components/CommandPalette'
@@ -49,12 +48,9 @@ const PLACE: Record<string, string> = {
   tasks: 'Tasks',
   dashboard: 'Dashboard',
   actions: 'Action Center',
-  facts: 'Decisions & Facts',
   entity: 'Profile',
-  insights: 'Word Map',
-  email: 'Email Follow-Ups',
-  chat: 'Inbox',
-  nudges: 'Nudges',
+  insights: 'Topics & Insights',
+  nudges: 'Reminders',
   calendar: 'Calendar',
   prep: 'Meeting Prep',
   rollup: 'Weekly Review',
@@ -88,11 +84,8 @@ type ViewName =
   | 'tasks'
   | 'dashboard'
   | 'actions'
-  | 'facts'
   | 'entity'
   | 'insights'
-  | 'email'
-  | 'chat'
   | 'nudges'
   | 'calendar'
   | 'prep'
@@ -111,9 +104,6 @@ function tabForView(v: ViewName, hasNote: boolean): Tab | null {
     case 'tasks':
     case 'dashboard':
     case 'actions':
-    case 'facts':
-    case 'email':
-    case 'chat':
     case 'calendar':
     case 'rollup':
     case 'series':
@@ -156,15 +146,18 @@ function App(): React.JSX.Element {
   // Opening a page from the sidebar, a card or a link starts it at its front door.
   const setView = useCallback((v: ViewName) => {
     navReset(v + '.')
+    // The Tasks, Dashboard and Action Center pages keep their state under "dash.".
+    if (v === 'tasks' || v === 'dashboard' || v === 'actions') navReset('dash.')
     setViewRaw(v)
   }, [])
   const [entityId, setEntityId] = useState<string | null>(null)
   const [editor, setEditor] = useState<EditorValue | null>(null)
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('mine')
-  const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null)
+  const [toast, setToast] = useState<ToastData | null>(null)
   const [copilot, setCopilot] = useState(false)
   const [palette, setPalette] = useState(false)
   const [guide, setGuide] = useState(false)
+  const [shortcuts, setShortcuts] = useState(false)
   const [confetti, setConfetti] = useState(0)
   const [manageCat, setManageCat] = useState('person')
   // Tagged names (like @Jacob when two people share it) waiting in Review Names.
@@ -247,10 +240,9 @@ function App(): React.JSX.Element {
   const current = notes.find((n) => n.path === selectedPath)
 
   const flash = useCallback((msg: string, undo?: () => void) => {
-    const t = { msg, undo }
-    setToast(t)
-    setTimeout(() => setToast((cur) => (cur === t ? null : cur)), undo ? 7000 : 5000)
+    setToast({ id: Date.now() + Math.random(), msg, undo })
   }, [])
+  const dismissToast = useCallback(() => setToast(null), [])
 
   const open = useCallback((path: string) => {
     setSelected(path)
@@ -422,10 +414,6 @@ function App(): React.JSX.Element {
     setView('tasks')
     setSettingsOpen(false)
   }, [])
-  const openFacts = useCallback(() => {
-    setView('facts')
-    setSettingsOpen(false)
-  }, [])
   const openActions = useCallback(() => {
     setView('actions')
     setSettingsOpen(false)
@@ -461,10 +449,14 @@ function App(): React.JSX.Element {
     setSettingsOpen(false)
   }, [])
 
-  const openEmail = useCallback(() => {
-    setView('email')
+  // The mail and chat lists are sections of the Action Center. Open the page first (it starts at
+  // its front door), then pick the section.
+  const openActionsSection = useCallback((section: 'act' | 'facts' | 'mail' | 'chat') => {
+    setView('actions')
+    navSet('actions.section', section)
     setSettingsOpen(false)
   }, [])
+  const openEmail = useCallback(() => openActionsSection('mail'), [openActionsSection])
   const [chatCount, setChatCount] = useState(0)
   useEffect(() => {
     const load = (): void => {
@@ -484,10 +476,7 @@ function App(): React.JSX.Element {
       clearInterval(t)
     }
   }, [])
-  const openChat = useCallback(() => {
-    setView('chat')
-    setSettingsOpen(false)
-  }, [])
+  const openChat = useCallback(() => openActionsSection('chat'), [openActionsSection])
   const connect = useCallback(() => void window.api.invoke('google:open-login'), [])
 
   // What a nudge's buttons do.
@@ -509,7 +498,7 @@ function App(): React.JSX.Element {
   // Quick capture handed a long note over: open it here to keep writing.
   useEffect(() => window.api.on('app:open-note', ({ path }) => open(path)), [open])
 
-  // Clicking a Windows toast brings the app forward on the Nudges page.
+  // Clicking a Windows toast brings the app forward on the Reminders page.
   useEffect(
     () =>
       window.api.on('nudges:focus', () => {
@@ -593,7 +582,30 @@ function App(): React.JSX.Element {
             runAI({ kind, path: selectedPath }, `${label.replace('AI: ', '')}: “${current.title}”`)
         }))
       : []),
-    { id: 'tasks', label: 'Go to tasks', run: () => setTab('tasks') },
+    { id: 'tasks', label: 'Go to tasks', hint: 'overview', run: () => setTab('tasks') },
+    { id: 'all-tasks', label: 'Go to all tasks', hint: 'the full list', run: openTasksPage },
+    {
+      id: 'actions',
+      label: 'Go to Action Center',
+      hint: 'what needs you from mail, chat and meetings',
+      run: openActions
+    },
+    {
+      id: 'facts',
+      label: 'Go to decisions and facts',
+      hint: 'in the Action Center',
+      run: () => openActionsSection('facts')
+    },
+    {
+      id: 'review-names',
+      label: 'Review names',
+      hint: reviewCount > 0 ? `${reviewCount} waiting` : undefined,
+      run: () => {
+        setManageCat('review')
+        setView('manage')
+        setSettingsOpen(false)
+      }
+    },
     {
       id: 'library',
       label: 'Browse notes by week, company, person, project...',
@@ -601,23 +613,39 @@ function App(): React.JSX.Element {
     },
     { id: 'cal', label: 'Go to calendar', run: openCalendar },
     { id: 'mail', label: 'Go to email follow-ups', run: openEmail },
-    { id: 'inbox', label: 'Go to inbox (what matters from meetings, email, chat)', run: openChat },
-    { id: 'nudges', label: 'Go to nudges', run: openNudges },
+    { id: 'inbox', label: 'Go to the chat and meeting inbox', run: openChat },
+    { id: 'nudges', label: 'Go to reminders', hint: 'nudges', run: openNudges },
     { id: 'rollup', label: 'Weekly Review', hint: 'this week', run: openRollup },
     { id: 'series', label: 'Meeting Series', hint: 'repeating meetings', run: openSeries },
-    { id: 'insights', label: 'Go to word map and insights', run: openInsights },
+    { id: 'insights', label: 'Go to topics and insights', run: openInsights },
     { id: 'sync', label: 'Refresh calendar and mail', run: sync },
     {
       id: 'theme',
       label: 'Switch between light and dark',
       run: () => setTheme(theme === 'dark' ? 'light' : 'dark')
     },
+    { id: 'shortcuts', label: 'Show keyboard shortcuts', hint: '?', run: () => setShortcuts(true) },
     { id: 'guide', label: 'Show the setup guide', run: () => setGuide(true) },
     { id: 'settings', label: 'Open Settings', run: () => setSettingsOpen(true) }
   ]
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // Behind an open dialog the global shortcuts stay quiet (Ctrl+K still closes the palette).
+      const open = document.querySelector('[aria-modal="true"]')
+      if (open && !(palette && e.key.toLowerCase() === 'k')) return
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '')
+      const editing = typing || !!(e.target as HTMLElement)?.isContentEditable
+      if (e.key === '?' && !editing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        setShortcuts(true)
+        return
+      }
+      // Esc closes Settings (dialogs and the Co-Pilot handle their own Esc first).
+      if (e.key === 'Escape' && settingsOpen && !editing && !e.defaultPrevented && !palette) {
+        setSettingsOpen(false)
+        return
+      }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         void newNote()
@@ -633,7 +661,7 @@ function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newNote])
+  }, [newNote, palette, settingsOpen])
 
   // ---- Back: one history of where you have been (the page, what was open, where you were inside
   // it, how far you had scrolled) for the whole app. A Back bar, Alt+Left and the mouse's back
@@ -780,6 +808,10 @@ function App(): React.JSX.Element {
         }}
       >
         <Sidebar
+          onFixAi={() => {
+            setSettingsSection('AI Co-Pilot')
+            setSettingsOpen(true)
+          }}
           onFixGoogle={() => {
             setSettingsSection('Google')
             setSettingsOpen(true)
@@ -788,10 +820,6 @@ function App(): React.JSX.Element {
           entities={entities}
           gmail={gmail}
           mailAttention={mail?.attention ?? 0}
-          emailActive={view === 'email' && !settingsOpen}
-          onEmail={openEmail}
-          chatActive={view === 'chat' && !settingsOpen}
-          onChat={openChat}
           chatCount={chatCount}
           unreadNudges={unreadNudges}
           nudgesActive={view === 'nudges' && !settingsOpen}
@@ -799,15 +827,11 @@ function App(): React.JSX.Element {
           onCalendar={openCalendar}
           onRollup={openRollup}
           onSeries={openSeries}
-          seriesActive={view === 'series' && !settingsOpen}
-          calendarActive={(view === 'calendar' || view === 'prep') && !settingsOpen}
-          rollupActive={view === 'rollup' && !settingsOpen}
           reviewCount={reviewCount}
           onReview={() => {
             setManageCat('review')
             setView('manage')
           }}
-          onOpenPrep={openPrep}
           exploreActive={
             settingsOpen
               ? null
@@ -824,29 +848,27 @@ function App(): React.JSX.Element {
           navView={
             settingsOpen
               ? null
-              : view === 'dashboard' || view === 'tasks' || view === 'actions' || view === 'facts'
+              : view === 'dashboard' || view === 'tasks' || view === 'actions'
                 ? view
                 : view === 'calendar' || view === 'prep'
                   ? 'calendar'
-                  : null
+                  : view === 'rollup' || view === 'series'
+                    ? view
+                    : null
           }
           onDashboard={openDashboard}
           onTasksPage={openTasksPage}
           onActions={openActions}
-          onFacts={openFacts}
-          upcoming={upcoming}
           cal={cal}
           selected={view === 'note' && !settingsOpen ? selectedPath : null}
           tab={activeTab ?? tab}
           activeTab={activeTab}
           onTab={setTab}
           onSelect={open}
-          onOpenEvent={(id) => void openEvent(id)}
           onNew={() => void newNote()}
           onHome={goHome}
           homeActive={view === 'note' && !selectedPath && !settingsOpen}
           onSync={sync}
-          onConnect={connect}
           onSettings={() => setSettingsOpen((v) => !v)}
           settingsOpen={settingsOpen}
           copilotOpen={copilot}
@@ -895,8 +917,6 @@ function App(): React.JSX.Element {
               onTheme={setTheme}
               cal={cal}
               gmail={gmail}
-              onSync={sync}
-              onConnect={connect}
               section={settingsSection}
               onBack={() => {
                 setSettingsOpen(false)
@@ -974,17 +994,6 @@ function App(): React.JSX.Element {
               onAction={(a) => void runAction(a)}
               onSettings={() => setSettingsOpen(true)}
             />
-          ) : view === 'email' ? (
-            <EmailView
-              mail={mail}
-              gmail={gmail}
-              onConnect={connect}
-              onSync={sync}
-              onSettings={() => setSettingsOpen(true)}
-              onFlash={flash}
-            />
-          ) : view === 'chat' ? (
-            <InboxView onSettings={() => setSettingsOpen(true)} onOpenNote={open} onFlash={flash} />
           ) : view === 'insights' ? (
             <InsightsView onOpenEntity={openEntity} />
           ) : view === 'entity' && entityId ? (
@@ -1005,10 +1014,15 @@ function App(): React.JSX.Element {
                 setView('manage')
               }}
             />
-          ) : view === 'facts' ? (
-            <FactsPage onFlash={flash} />
           ) : view === 'actions' ? (
-            <ActionsPage onFlash={flash} onSettings={() => setSettingsOpen(true)} />
+            <ActionsPage
+              onFlash={flash}
+              onSettings={() => setSettingsOpen(true)}
+              mail={mail}
+              gmail={gmail}
+              onConnect={connect}
+              onSync={sync}
+            />
           ) : view === 'tasks' ? (
             <TasksView
               tasks={tasks}
@@ -1065,10 +1079,11 @@ function App(): React.JSX.Element {
               onNewNote={() => void newNote()}
               onOpenEvent={(id) => void openEvent(id)}
               onOpenTasks={() => setTab('tasks')}
+              onOpenFilter={pickFilter}
               onCopilot={() => setCopilot(true)}
               onPlan={() => runAI({ kind: 'day-brief' }, 'What is on my plate today?')}
               onSettings={() => setSettingsOpen(true)}
-              onInbox={openChat}
+              onInbox={() => openActionsSection('act')}
               onEmail={openEmail}
               mailAttention={mail?.attention ?? 0}
             />
@@ -1091,7 +1106,8 @@ function App(): React.JSX.Element {
         />
       )}
       {confetti > 0 && <Confetti key={confetti} nonce={confetti} onDone={clearConfetti} />}
-      {guide && <SetupGuide onFinish={finishGuide} />}
+      {shortcuts && <ShortcutsDialog onClose={() => setShortcuts(false)} />}
+      {guide && <SetupGuide onFinish={finishGuide} onClose={() => setGuide(false)} />}
       {palette && (
         <CommandPalette
           actions={paletteActions}
@@ -1129,22 +1145,7 @@ function App(): React.JSX.Element {
           onRemove={editor.originalName !== undefined ? removeEntity : undefined}
         />
       )}
-      {toast && (
-        <div
-          role="status"
-          className="toast-in fixed bottom-4 left-1/2 -translate-x-1/2 rounded-lg bg-fg px-4 py-2 text-sm text-[var(--app)] shadow-lg"
-        >
-          {toast.msg}
-          {toast.undo && (
-            <button
-              className="ml-3 font-semibold underline underline-offset-2"
-              onClick={toast.undo}
-            >
-              Undo
-            </button>
-          )}
-        </div>
-      )}
+      <Toast toast={toast} onDismiss={dismissToast} />
     </div>
   )
 }

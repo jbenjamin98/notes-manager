@@ -471,9 +471,10 @@ export function registerIpc(ctx: Ctx): void {
     },
     'calendar:range': ({ from, to }) => buildRange(ctx.db, from, to, vault().listTasks()),
     'app:open-external': ({ url }) => {
-      // Only the providers' key pages (for API-key setup), Google Cloud Console, and genuine Meet rooms may leave the app.
+      // Only the providers' key pages (for API-key setup), Google Cloud Console, the Apps Script site (private-script setup), and genuine Meet rooms may leave the app.
       if (
         url === 'https://console.cloud.google.com/apis/credentials' ||
+        url === 'https://script.google.com/' ||
         Object.values(PROVIDERS).some((p) => p.keyUrl === url)
       ) {
         void shell.openExternal(url)
@@ -543,8 +544,12 @@ export function registerIpc(ctx: Ctx): void {
       ctx.gmail.touch()
       return null
     },
-    'gmail:dismiss': ({ id }) => {
-      recordAction(ctx.db, id, 'dismissed')
+    'gmail:dismiss': ({ id, undo }) => {
+      if (undo)
+        ctx.db
+          .prepare("DELETE FROM email_actions WHERE thread_id = ? AND action = 'dismissed'")
+          .run(id)
+      else recordAction(ctx.db, id, 'dismissed')
       ctx.gmail.touch()
       return null
     },

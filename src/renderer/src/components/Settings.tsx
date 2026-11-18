@@ -83,8 +83,6 @@ export default function Settings({
   onTheme,
   cal,
   gmail,
-  onSync,
-  onConnect,
   onBack,
   onShowGuide,
   section = null
@@ -95,8 +93,6 @@ export default function Settings({
   onTheme: (m: ThemeMode) => void
   cal: CalendarStatus
   gmail: GmailStatus
-  onSync: () => void
-  onConnect: () => void
   onBack: () => void
   onShowGuide: () => void
 }): React.JSX.Element {
@@ -104,6 +100,13 @@ export default function Settings({
   const [names, setNames] = useState('')
   const [namesSaved, setNamesSaved] = useState(false)
   const [mailOn, setMailOn] = useState(true)
+  // The company's built-in Google sign-in comes first; the private script is then an alternative.
+  const [signInBuild, setSignInBuild] = useState(false)
+  useEffect(() => {
+    void window.api
+      .invoke('google:api-status')
+      .then((r) => r.ok && setSignInBuild(r.data.defaultClient))
+  }, [])
   const [nudges, setNudges] = useState({
     enabled: true,
     toasts: true,
@@ -284,7 +287,7 @@ export default function Settings({
           >
             <ArrowLeftIcon width={14} height={14} /> Back
           </button>
-          <p className="mb-2 px-3 text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
+          <p className="mb-2 px-3 text-xs font-semibold tracking-wide text-muted uppercase">
             Settings
           </p>
           <ul className="space-y-0.5">
@@ -392,9 +395,19 @@ export default function Settings({
           <Section title="Google">
             <ConnectionPanel />
             <div className="mt-3" />
-            <BridgeSetup />
-            <div className="mt-3" />
-            <GoogleSettings cal={cal} onSync={onSync} onConnect={onConnect} />
+            {signInBuild ? (
+              <>
+                <GoogleSettings cal={cal} />
+                <div className="mt-3" />
+                <BridgeSetup />
+              </>
+            ) : (
+              <>
+                <BridgeSetup />
+                <div className="mt-3" />
+                <GoogleSettings cal={cal} />
+              </>
+            )}
           </Section>
 
           <Section title="Nudges and Notifications">

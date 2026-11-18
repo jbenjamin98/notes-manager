@@ -16,15 +16,22 @@ const GROUPS: { title: string; hint: string; kinds: string[] }[] = [
  * into the note) and mark the rest not pertinent.
  */
 export default function FactsPage({
-  onFlash
+  onFlash,
+  embedded = false
 }: {
   onFlash: (m: string, undo?: () => void) => void
+  /** Shown inside the Action Center, which supplies the page heading. */
+  embedded?: boolean
 }): React.JSX.Element {
   const [items, setItems] = useState<ActionItem[] | null>(null)
+  const [failed, setFailed] = useState(false)
   const now = useNow()
 
   const load = useCallback(() => {
-    void window.api.invoke('inbox:list').then((r) => setItems(buildReview(r.ok ? r.data : [])))
+    void window.api.invoke('inbox:list').then((r) => {
+      setFailed(!r.ok)
+      setItems(buildReview(r.ok ? r.data : []))
+    })
   }, [])
   useEffect(() => {
     load()
@@ -42,15 +49,28 @@ export default function FactsPage({
   )
 
   return (
-    <div className="h-full overflow-y-auto px-6 py-5" data-testid="facts-page">
+    <div
+      className={`h-full overflow-y-auto ${embedded ? 'pb-6' : 'px-6 py-5'}`}
+      data-testid="facts-page"
+    >
       <div className="mx-auto w-full max-w-3xl">
-        <h1 className="text-2xl font-semibold tracking-tight">Decisions &amp; Facts</h1>
-        <p className="mt-1 mb-4 text-xs text-muted">
+        {!embedded && (
+          <h1 className="text-2xl font-semibold tracking-tight">Decisions &amp; Facts</h1>
+        )}
+        <p className={`mt-1 mb-4 text-xs text-muted`}>
           Things worth knowing, found in your meetings, email and chat. Keep the useful ones (they
           are saved into the note) and mark the rest not pertinent.
         </p>
         {items === null ? (
           <p className="text-sm text-muted">Looking…</p>
+        ) : failed ? (
+          <EmptyState
+            tone="error"
+            icon="⚠️"
+            title="Could not load decisions and facts"
+            body="Something went wrong reading what was found in your meetings and mail."
+            action={{ label: 'Try Again', onClick: load }}
+          />
         ) : groups.length === 0 ? (
           <EmptyState
             title="Nothing to review"

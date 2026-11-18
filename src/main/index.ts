@@ -25,7 +25,7 @@ import { getSettings, updateSettings } from './services/settings'
 import { CalendarSync } from './calendar/sync'
 import { openCompose, googleFetch } from './services/google'
 import { BridgeClient } from './google/bridge'
-import { GoogleHub, bridgeExtras } from './google/hub'
+import { GoogleHub } from './google/hub'
 import { scheduleSelfTest } from './google/health'
 import { insightsFromChat, insightsFromMeeting, type PipelineDeps } from './insights/pipeline'
 import { insightsFromMail } from './insights/mail'
@@ -316,7 +316,11 @@ if (!app.requestSingleInstanceLock()) {
         : googleFetch,
       tz: () => getSettings().timezone
     })
-    const hub = new GoogleHub(google, bridge)
+    const hub = new GoogleHub(google, bridge, {
+      db,
+      settings: () => getSettings().google,
+      onMeeting: (m) => onMeeting(m)
+    })
     scheduleSelfTest(bridge, db, () => !google.active())
     // What matters from chat, meetings and mail: read what changed, keep the insights.
     let llmRef: LlmRouter | null = null
@@ -324,7 +328,8 @@ if (!app.requestSingleInstanceLock()) {
     const insightDeps = (d: NonNullable<typeof db>): PipelineDeps => ({
       db: d,
       llm: getSettings().llm.enabled ? llmRef : null,
-      me: () => getSettings().meAliases
+      me: () => getSettings().meAliases,
+      headroom: () => llmRef?.hasHeadroom() ?? true
     })
     const onMeeting = async (m: MeetingRead): Promise<void> => {
       if (db) await insightsFromMeeting(insightDeps(db), m).catch(() => 0)
@@ -335,7 +340,8 @@ if (!app.requestSingleInstanceLock()) {
       const d = db
       if (!d) return Promise.resolve(0)
       insightsRun = (async () => {
-        const deps = insightDeps(d)
+        // At most 10 model reads per run; the rest wait for the next one (and for budget headroom).
+        const deps = { ...insightDeps(d), modelRuns: { left: 10 }, stats: { deferred: 0 } }
         let n = await insightsFromChat(deps)
         if (getSettings().google.readMailBodies && hub.mailAvailable()) {
           const self = (
@@ -363,25 +369,10 @@ if (!app.requestSingleInstanceLock()) {
         send('calendar:changed', calendar?.getStatus())
         engine?.tick() // fresh events can make a prep/capture nudge due right now
         void assistantRef?.proactiveTick()
-        void google.extras(vault).then(() => {
+        void hub.extras(vault).then(() => {
           mainWindow?.webContents.send('vault:changed', { paths: [] })
           return runInsights()
         })
-        if (db && !google.active())
-          void bridgeExtras(
-            bridge,
-            db,
-            vault,
-            {
-              meetNotes: getSettings().google.meetNotes,
-              meetFullText: getSettings().google.meetFullText,
-              chat: true
-            },
-            onMeeting
-          ).then(() => {
-            mainWindow?.webContents.send('vault:changed', { paths: [] })
-            return runInsights()
-          })
       },
       // First sync learns who "me" is, unless the user already set their names in Settings.
       (name) => {
@@ -409,7 +400,8 @@ if (!app.requestSingleInstanceLock()) {
       db,
       dailyBudget: () => getSettings().llm.dailyTokenBudget,
       getKey: (p) => secrets.get('llm.' + p),
-      getConfig: () => routerConfig(getSettings().llm)
+      getConfig: () => routerConfig(getSettings().llm),
+      onChange: () => mainWindow?.webContents.send('llm:changed', null)
     })
     llmRef = llm
     const tagger = new AutoTagger({
@@ -489,6 +481,7 @@ if (!app.requestSingleInstanceLock()) {
       llm,
       secrets,
       bridge,
+      hub,
       runInsights,
       capture: capture!,
       google,

@@ -5,12 +5,12 @@ import type {
   EntitySummary,
   GmailStatus,
   NoteSummary,
-  TaskItem,
-  UpcomingEvent
+  TaskItem
 } from '@shared/contract'
 import { countFilters } from '../tasks'
 import { noteBucket, relativeTime, shortDate, todayIso } from '../format'
-import { useGoogleConnection, useNow } from '../hooks'
+import { aiHealth } from '@shared/aiHealth'
+import { useGoogleConnection, useLlmStatus, useNow } from '../hooks'
 import {
   BellIcon,
   SparkleIcon,
@@ -38,27 +38,17 @@ interface Props {
   onCalendar: () => void
   onRollup: () => void
   onSeries: () => void
-  seriesActive: boolean
-  calendarActive: boolean
-  rollupActive: boolean
   reviewCount: number
   onReview: () => void
-  onOpenPrep: (eventId: string) => void
   unreadNudges: number
   nudgesActive: boolean
   onNudges: () => void
-  emailActive: boolean
-  onEmail: () => void
-  chatActive: boolean
-  onChat: () => void
   chatCount: number
   tasks: TaskItem[]
   navView: NavView | null
   onDashboard: () => void
   onTasksPage: () => void
   onActions: () => void
-  onFacts: () => void
-  upcoming: UpcomingEvent[]
   cal: CalendarStatus
   selected: string | null
   /** The panel shown below the tabs. */
@@ -67,16 +57,16 @@ interface Props {
   activeTab: Tab | null
   onTab: (t: Tab) => void
   onSelect: (path: string) => void
-  onOpenEvent: (id: string) => void
   onNew: () => void
   /** Go to Home (today at a glance: tasks gauge, next meeting). */
   onHome: () => void
   homeActive: boolean
   onSync: () => void
-  onConnect: () => void
   onSettings: () => void
   /** Open Settings at the Google section (when the connection needs a fix). */
   onFixGoogle: () => void
+  /** Open Settings at the AI section (from the AI status chip). */
+  onFixAi: () => void
   settingsOpen: boolean
   onLibrary: () => void
   copilotOpen: boolean
@@ -223,7 +213,7 @@ function Explore({
     <div className="pt-2">
       <Row active={active === 'insights'} onClick={onInsights}>
         <CategoryIcon kind="wordmap" size={22} />
-        <span className="flex-1 font-medium">Word Map</span>
+        <span className="flex-1 font-medium">Topics &amp; Insights</span>
       </Row>
       <Row active={false} onClick={onReview}>
         <CategoryIcon kind="review" size={22} />
@@ -301,9 +291,9 @@ function Explore({
   )
 }
 
-export type NavView = 'dashboard' | 'tasks' | 'actions' | 'facts' | 'calendar'
+export type NavView = 'dashboard' | 'tasks' | 'actions' | 'calendar' | 'rollup' | 'series'
 
-/** The four places in the Tasks tab: the dashboard, the full task list, the Action Center and the calendar. */
+/** The places in the Tasks tab: overview, the full task list, the Action Center, and the calendar with its reviews. */
 function TaskLists({
   tasks,
   navView,
@@ -311,8 +301,9 @@ function TaskLists({
   onDashboard,
   onTasksPage,
   onActions,
-  onFacts,
-  onCalendar
+  onCalendar,
+  onRollup,
+  onSeries
 }: {
   tasks: TaskItem[]
   navView: NavView | null
@@ -320,8 +311,9 @@ function TaskLists({
   onDashboard: () => void
   onTasksPage: () => void
   onActions: () => void
-  onFacts: () => void
   onCalendar: () => void
+  onRollup: () => void
+  onSeries: () => void
 }): React.JSX.Element {
   const today = todayIso()
   const c = countFilters(tasks, today)
@@ -331,11 +323,11 @@ function TaskLists({
     <div className="space-y-0.5 pt-2" role="navigation" aria-label="Tasks">
       <Row active={navView === 'dashboard'} onClick={onDashboard}>
         <CategoryIcon kind="weeks" size={16} />
-        <span className="min-w-0 flex-1 truncate">Dashboard</span>
+        <span className="min-w-0 flex-1 truncate">Overview</span>
       </Row>
       <Row active={navView === 'tasks'} onClick={onTasksPage}>
         <CategoryIcon kind="tasks" size={16} />
-        <span className="min-w-0 flex-1 truncate">Tasks</span>
+        <span className="min-w-0 flex-1 truncate">All Tasks</span>
         {badge(c.mine, 'bg-hover text-muted')}
       </Row>
       <Row active={navView === 'actions'} onClick={onActions}>
@@ -345,13 +337,17 @@ function TaskLists({
           {badge(actionCount)}
         </span>
       </Row>
-      <Row active={navView === 'facts'} onClick={onFacts}>
-        <CategoryIcon kind="review" size={16} />
-        <span className="min-w-0 flex-1 truncate">Decisions &amp; Facts</span>
-      </Row>
       <Row active={navView === 'calendar'} onClick={onCalendar}>
         <CategoryIcon kind="calendar" size={16} />
         <span className="min-w-0 flex-1 truncate">Calendar</span>
+      </Row>
+      <Row active={navView === 'rollup'} onClick={onRollup}>
+        <CategoryIcon kind="review" size={16} />
+        <span className="min-w-0 flex-1 truncate">Weekly Review</span>
+      </Row>
+      <Row active={navView === 'series'} onClick={onSeries}>
+        <CategoryIcon kind="weeks" size={16} />
+        <span className="min-w-0 flex-1 truncate">Meeting Series</span>
       </Row>
     </div>
   )
@@ -368,6 +364,7 @@ export default function Sidebar(props: Props): React.JSX.Element {
   const latest = [cal.lastSyncAt, gmail.lastSyncAt].filter(Boolean).sort().pop() ?? null
 
   const conn = useGoogleConnection()
+  const ai = aiHealth(useLlmStatus(), now)
   // Anything that needs you (not set up, sign in, key missing, out of date) opens the Google settings.
   const needsFix = !!conn && !['ok', 'syncing', 'busy', 'error'].includes(conn.state) && !syncing
   const status = syncing
@@ -396,14 +393,12 @@ export default function Sidebar(props: Props): React.JSX.Element {
       onClick={() => onTab(t)}
       title={label}
       aria-label={label}
-      className={`flex items-center justify-center gap-1.5 rounded-md py-1 text-sm font-medium transition-all ${
-        activeTab === t
-          ? 'flex-[2.4] bg-field text-fg shadow-sm'
-          : 'flex-1 text-muted hover:text-fg'
+      className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1 text-xs font-medium transition-colors ${
+        activeTab === t ? 'bg-field text-fg shadow-sm' : 'text-muted hover:text-fg'
       }`}
     >
       {icon}
-      {activeTab === t && label}
+      {label}
     </button>
   )
 
@@ -455,8 +450,9 @@ export default function Sidebar(props: Props): React.JSX.Element {
             onDashboard={props.onDashboard}
             onTasksPage={props.onTasksPage}
             onActions={props.onActions}
-            onFacts={props.onFacts}
             onCalendar={props.onCalendar}
+            onRollup={props.onRollup}
+            onSeries={props.onSeries}
           />
         ) : (
           <Explore
@@ -471,6 +467,31 @@ export default function Sidebar(props: Props): React.JSX.Element {
         )}
       </div>
 
+      {!ai.hidden && (
+        <button
+          onClick={props.onFixAi}
+          data-testid="ai-status"
+          data-tone={ai.tone}
+          title={`${ai.detail} Click for details.`}
+          aria-label={`${ai.label}. ${ai.detail}`}
+          className={`mx-2 mb-1 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-hover ${
+            ai.tone === 'bad' ? 'text-danger' : ai.tone === 'warn' ? 'text-warn' : 'text-muted'
+          }`}
+        >
+          <SparkleIcon width={14} height={14} className="shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{ai.label}</span>
+          {ai.budgetShare > 0 && (
+            <span aria-hidden className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-hover">
+              <span
+                className={`block h-full rounded-full ${
+                  ai.tone === 'bad' ? 'bg-danger' : ai.tone === 'warn' ? 'bg-warn' : 'bg-accent'
+                }`}
+                style={{ width: `${Math.round(ai.budgetShare * 100)}%` }}
+              />
+            </span>
+          )}
+        </button>
+      )}
       <div className="flex items-center gap-1 border-t border-line px-2 py-2">
         <button
           onClick={needsFix || needsAuth ? props.onFixGoogle : onSync}
@@ -509,8 +530,8 @@ export default function Sidebar(props: Props): React.JSX.Element {
         </button>
         <button
           onClick={props.onNudges}
-          aria-label={`Nudges${props.unreadNudges ? `, ${props.unreadNudges} unread` : ''}`}
-          title="Nudges"
+          aria-label={`Reminders${props.unreadNudges ? `, ${props.unreadNudges} unread` : ''}`}
+          title="Reminders"
           className={`relative rounded-md p-2 ${props.nudgesActive ? 'bg-accent-soft' : 'text-muted hover:bg-hover hover:text-fg'}`}
         >
           <BellIcon />

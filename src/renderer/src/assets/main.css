@@ -194,7 +194,13 @@ button {
   cursor: pointer;
 }
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[role='tab']:focus-visible,
+[role='option']:focus-visible,
+[tabindex]:not([tabindex='-1']):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -1284,4 +1290,31 @@ button:not(:disabled):active {
   border-bottom: 1.5px dotted var(--accent);
   background: var(--accent-soft);
   border-radius: 3px;
+}
+
+/* ---- Shared tokens and motion safety (UI/UX review) ---- */
+:root {
+  --radius-control: 0.5rem; /* buttons, inputs */
+  --radius-card: 0.75rem; /* cards, popovers */
+  --radius-dialog: 1rem; /* modals */
+  --shadow-pop: 0 10px 30px -12px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation-duration: 2.4s;
+  }
+  .btn-primary,
+  .btn-primary:hover {
+    transition: none !important;
+    transform: none !important;
+  }
+  html {
+    transition: none !important;
+  }
+  .glass::before {
+    display: none;
+  }
+}
+kbd {
+  font-family: inherit;
 }

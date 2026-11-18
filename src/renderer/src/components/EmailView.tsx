@@ -147,8 +147,11 @@ export default function EmailView({
   onConnect,
   onSync,
   onSettings,
-  onFlash
+  onFlash,
+  embedded = false
 }: {
+  /** Shown inside the Action Center, which supplies the page heading and scrolling. */
+  embedded?: boolean
   mail: GmailOverview | null
   gmail: GmailStatus
   onConnect: () => void
@@ -162,11 +165,13 @@ export default function EmailView({
     mail.needsReply.length + mail.starred.length + mail.groups.length + mail.info.length === 0
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-8 py-8">
+    <div className={embedded ? '' : 'h-full overflow-y-auto'}>
+      <div className={embedded ? 'pb-2' : 'mx-auto max-w-3xl px-8 py-8'}>
         <header className="mb-4 flex items-end gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Email Follow-Ups</h1>
+            {!embedded && (
+              <h1 className="text-2xl font-semibold tracking-tight">Email Follow-Ups</h1>
+            )}
             <p className="mt-1 text-xs text-muted">
               {never
                 ? 'Not synced yet.'

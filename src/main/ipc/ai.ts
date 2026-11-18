@@ -14,6 +14,9 @@ export function llmStatusFor(ctx: Ctx): Output<'llm:status'> {
     enabled: getSettings().llm.enabled,
     budget: ctx.llm.budget(),
     usage: ctx.llm.usageByFeature(),
+    cacheHits: ctx.llm.cacheHitsToday(),
+    history: ctx.llm.history(7),
+    events: ctx.llm.recentEvents(8),
     canStoreKeys: ctx.secrets.canStore(),
     providers: st.providers.map((p) => {
       const m = PROVIDERS[p.id]

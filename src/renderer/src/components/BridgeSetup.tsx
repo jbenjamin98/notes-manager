@@ -5,7 +5,7 @@ import { relativeTime } from '../format'
 const btn =
   'rounded-md border border-line bg-field px-3 py-1.5 text-sm font-medium hover:bg-hover disabled:opacity-50'
 const primary =
-  'rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50'
+  'rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90 disabled:opacity-50'
 
 const SECTION_LABEL: Record<string, string> = {
   calendar: 'Calendar',
@@ -53,12 +53,19 @@ export function BridgeSetup(): React.JSX.Element {
     }
   }, [])
 
+  // Builds with the company's Google sign-in make the script an alternative, not the first step.
+  const [signInBuild, setSignInBuild] = useState(false)
   useEffect(() => {
-    void window.api.invoke('google:bridge-status').then((r) => {
+    void Promise.all([
+      window.api.invoke('google:bridge-status'),
+      window.api.invoke('google:api-status')
+    ]).then(([r, a]) => {
+      const builtIn = a.ok && a.data.defaultClient
+      setSignInBuild(builtIn)
       if (r.ok) {
         setSt(r.data)
         setUrl(r.data.url)
-        setOpen(!r.data.configured)
+        setOpen(!r.data.configured && !builtIn)
       }
     })
   }, [])
@@ -110,11 +117,17 @@ export function BridgeSetup(): React.JSX.Element {
     <div className="rounded-lg border border-line p-3" data-testid="bridge-setup">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">Your Google account (private script)</div>
+          <div className="text-sm font-medium">
+            {signInBuild && !st?.configured
+              ? 'Or use your own private script'
+              : 'Your Google account (private script)'}
+          </div>
           <div className="text-xs text-muted">
             {st?.configured
               ? 'Connected through your own read-only script.'
-              : 'Calendar, mail and meeting notes, with no screen-reading.'}
+              : signInBuild
+                ? 'Only if Sign In With Google does not work for you. About 5 minutes.'
+                : 'Calendar, mail and meeting notes, about 5 minutes to set up.'}
           </div>
         </div>
         <button className={btn} onClick={() => setOpen(!open)}>
@@ -173,7 +186,9 @@ export function BridgeSetup(): React.JSX.Element {
             <b>1.</b> Open{' '}
             <button
               className="text-[var(--accent)] underline"
-              onClick={() => void window.api.invoke('google:open-login')}
+              onClick={() =>
+                void window.api.invoke('app:open-external', { url: 'https://script.google.com/' })
+              }
             >
               script.google.com
             </button>{' '}

@@ -13,6 +13,8 @@ export interface OAuthDeps {
   /** Persisted, encrypted. */
   loadRefreshToken: () => string | null
   saveRefreshToken: (t: string | null) => void
+  /** Google revoked or expired the refresh token (so the UI can say "sign in again"). */
+  onRevoked?: () => void
   /** Opens the consent page in the user's own browser. */
   openExternal: (url: string) => void
   fetchImpl?: typeof fetch
@@ -80,6 +82,25 @@ export class GoogleOAuth {
    * Google's page. Resolves once the refresh token is stored. Rejects on denial or after 5 minutes.
    */
   async connect(scopes: string[], timeoutMs = 5 * 60_000): Promise<void> {
+    // A second click must not open a second listener and browser tab.
+    if (this.connecting)
+      throw new OAuthError('token', 'A Google sign-in is already open in your browser.')
+    this.connecting = this.runConnect(scopes, timeoutMs)
+    try {
+      await this.connecting
+    } finally {
+      this.connecting = null
+    }
+  }
+  private connecting: Promise<void> | null = null
+  private abort: (() => void) | null = null
+
+  /** Stop waiting for a sign-in that is open in the browser (the connect call then rejects). */
+  cancel(): void {
+    this.abort?.()
+  }
+
+  private async runConnect(scopes: string[], timeoutMs: number): Promise<void> {
     const clientId = this.deps.clientId()
     if (!clientId) throw new OAuthError('no-client', 'Add your Google OAuth client ID first.')
     const verifier = b64url(randomBytes(48))
@@ -122,6 +143,11 @@ export class GoogleOAuth {
         server.close()
         reject(new OAuthError('timeout', 'The sign-in took too long. Try again.'))
       }, timeoutMs)
+      this.abort = () => {
+        clearTimeout(timer)
+        server.close()
+        reject(new OAuthError('denied', 'Sign-in cancelled.'))
+      }
       server.listen(0, '127.0.0.1', () => {
         const port = (server.address() as AddressInfo).port
         const q = new URLSearchParams({
@@ -142,6 +168,7 @@ export class GoogleOAuth {
       })
     })
 
+    this.abort = null
     const tok = await this.tokenRequest({
       code,
       client_id: clientId,
@@ -167,21 +194,31 @@ export class GoogleOAuth {
   /** A valid access token, refreshing when needed. Null when not connected. */
   async accessToken(force = false): Promise<string | null> {
     if (!force && this.access && this.access.expiresAt > this.now()) return this.access.token
+    // One refresh at a time: parallel requests share it instead of each asking Google.
+    if (this.refreshing) return this.refreshing
     const refresh = this.deps.loadRefreshToken()
     if (!refresh) return null
-    const tok = await this.tokenRequest({
-      refresh_token: refresh,
-      client_id: this.deps.clientId(),
-      ...(this.deps.clientSecret() ? { client_secret: this.deps.clientSecret()! } : {}),
-      grant_type: 'refresh_token'
-    })
-    if (tok.scope) this.scopesGranted = tok.scope.split(' ')
-    this.access = {
-      token: tok.access_token,
-      expiresAt: this.now() + (tok.expires_in ?? 3600) * 1000 - 60_000
-    }
-    return tok.access_token
+    this.refreshing = (async () => {
+      try {
+        const tok = await this.tokenRequest({
+          refresh_token: refresh,
+          client_id: this.deps.clientId(),
+          ...(this.deps.clientSecret() ? { client_secret: this.deps.clientSecret()! } : {}),
+          grant_type: 'refresh_token'
+        })
+        if (tok.scope) this.scopesGranted = tok.scope.split(' ')
+        this.access = {
+          token: tok.access_token,
+          expiresAt: this.now() + (tok.expires_in ?? 3600) * 1000 - 60_000
+        }
+        return tok.access_token
+      } finally {
+        this.refreshing = null
+      }
+    })()
+    return this.refreshing
   }
+  private refreshing: Promise<string | null> | null = null
 
   private async tokenRequest(form: Record<string, string>): Promise<{
     access_token: string
@@ -204,6 +241,7 @@ export class GoogleOAuth {
       if (j.error === 'invalid_grant') {
         // The refresh token was revoked or expired: forget it so the UI asks to reconnect.
         this.deps.saveRefreshToken(null)
+        this.deps.onRevoked?.()
         this.access = null
         throw new OAuthError(
           'not-connected',

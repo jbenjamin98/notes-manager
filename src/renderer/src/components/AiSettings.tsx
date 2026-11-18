@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { LlmStatus } from '@shared/contract'
+import { aiHealth, featureLabel, untilText } from '@shared/aiHealth'
 import { relativeTime } from '../format'
+import { useNow } from '../hooks'
 import { KEY_GUIDES } from '../keyGuide'
 import { KeySteps } from './SetupGuide'
 import AiModeSwitch from './AiModeSwitch'
@@ -23,6 +25,7 @@ const STATE_TEXT: Record<P['state'], string> = {
 const n = (v: number): string => v.toLocaleString()
 
 function Usage({ p }: { p: P }): React.JSX.Element {
+  const now = useNow(15_000)
   const l = p.limits
   return (
     <div className="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-muted">
@@ -41,6 +44,12 @@ function Usage({ p }: { p: P }): React.JSX.Element {
           {l.remainingTokens !== null &&
             `${n(l.remainingTokens)}${l.limitTokens !== null ? ` of ${n(l.limitTokens)}` : ''} tokens left`}{' '}
           in its current window ({relativeTime(new Date(l.seenAt).toISOString())}).
+          {(() => {
+            const at = [l.resetRequestsAt, l.resetTokensAt]
+              .filter((t): t is number => typeof t === 'number' && t > now)
+              .sort((a, b) => a - b)[0]
+            return at ? ` Refills in about ${untilText(at, now)}.` : ''
+          })()}
         </p>
       ) : (
         <p>
@@ -240,19 +249,65 @@ function ProviderCard({
   )
 }
 
-const USAGE_LABEL = (f: string): string =>
-  f === 'ask'
-    ? 'Questions'
-    : f === 'capture'
-      ? 'Brain-dumps'
-      : f === 'names'
-        ? 'Name cleanup'
-        : f.startsWith('action:')
-          ? f.slice(7).replace(/-/g, ' ')
-          : 'Other'
+/** The last 7 days of tokens as small bars, plus the latest times a provider told us to slow down. */
+function History({ status }: { status: LlmStatus }): React.JSX.Element | null {
+  const days = status.history
+  const max = Math.max(1, ...days.map((d) => d.tokens))
+  const any = days.some((d) => d.calls > 0)
+  if (!any && status.events.length === 0) return null
+  return (
+    <div className="mt-3" data-testid="ai-history">
+      {any && (
+        <>
+          <p className="mb-1 text-xs font-medium text-fg">Last 7 days</p>
+          <ul className="flex h-14 items-end gap-1" aria-label="Tokens used per day">
+            {days.map((d) => (
+              <li
+                key={d.day}
+                className="flex h-full flex-1 flex-col items-center justify-end gap-0.5"
+                title={`${d.day}: ${d.tokens.toLocaleString()} tokens, ${d.calls} call${d.calls === 1 ? '' : 's'}${d.fails ? `, ${d.fails} failed` : ''}`}
+              >
+                <span
+                  className={`w-full rounded-sm ${d.fails > 0 ? 'bg-warn' : 'bg-accent'}`}
+                  style={{
+                    height: `${Math.max(d.calls > 0 ? 4 : 1, Math.round((d.tokens / max) * 100))}%`,
+                    opacity: d.calls > 0 ? 1 : 0.25
+                  }}
+                />
+                <span className="text-xs text-muted">
+                  {new Date(d.day + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'narrow' })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {status.events.length > 0 && (
+        <div className="mt-2">
+          <p className="mb-1 text-xs font-medium text-fg">Recently held back</p>
+          <ul className="space-y-0.5 text-xs text-muted">
+            {status.events.slice(0, 5).map((e, i) => (
+              <li key={i}>
+                {relativeTime(new Date(e.ts).toISOString())}:{' '}
+                {status.providers.find((p) => p.id === e.provider)?.label ?? e.provider}{' '}
+                {e.status === 429 ? 'rate-limited' : 'was overloaded'} (HTTP {e.status})
+                {e.retryAfterSec
+                  ? `, paused ${untilText(e.ts + e.retryAfterSec * 1000, e.ts)}`
+                  : ''}
+                {e.feature ? ` · ${featureLabel(e.feature)}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function AiSettings(): React.JSX.Element {
   const [status, setStatus] = useState<LlmStatus | null>(null)
+  const now = useNow(15_000)
+  const health = aiHealth(status, now)
   const [llm, setLlm] = useState<{
     enabled: boolean
     models: Record<string, Record<string, string>>
@@ -267,9 +322,14 @@ export default function AiSettings(): React.JSX.Element {
   useEffect(() => {
     load()
     void window.api.invoke('settings:get').then((r) => r.ok && setLlm(r.data.llm))
-    // Usage counts change as you work: refresh while Settings is open.
-    const t = setInterval(load, 15_000)
-    return () => clearInterval(t)
+    // Main pushes a change whenever a call is made or a provider is held back; a slow tick keeps
+    // countdowns honest.
+    const off = window.api.on('llm:changed', load)
+    const t = setInterval(load, 60_000)
+    return () => {
+      off()
+      clearInterval(t)
+    }
   }, [load])
 
   const setBudget = async (n: number): Promise<void> => {
@@ -327,14 +387,52 @@ export default function AiSettings(): React.JSX.Element {
               the Co-Pilot works on your computer until tomorrow.
             </span>
           </label>
+          {!health.hidden && (
+            <div
+              data-testid="ai-health"
+              data-tone={health.tone}
+              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+                health.tone === 'bad'
+                  ? 'border-danger/30 bg-danger/10 text-danger'
+                  : health.tone === 'warn'
+                    ? 'border-warn/30 bg-warn/10 text-warn'
+                    : 'border-line bg-surface text-muted'
+              }`}
+            >
+              <p className="font-medium text-fg">{health.label}</p>
+              <p>{health.detail}</p>
+              {status.budget.limit > 0 && (
+                <div
+                  role="progressbar"
+                  aria-label="Share of today's AI budget used"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(health.budgetShare * 100)}
+                  className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-hover"
+                >
+                  <div
+                    className={`h-full rounded-full ${health.tone === 'bad' ? 'bg-danger' : health.tone === 'warn' ? 'bg-warn' : 'bg-accent'}`}
+                    style={{ width: `${Math.round(health.budgetShare * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
           {status.usage.length > 0 && (
             <div className="mt-2 text-xs text-muted" data-testid="ai-usage">
               Today:{' '}
               {status.usage
-                .map((u) => `${USAGE_LABEL(u.feature)} ${u.tokens.toLocaleString()}`)
+                .map((u) => `${featureLabel(u.feature)} ${u.tokens.toLocaleString()}`)
                 .join(' · ')}
             </div>
           )}
+          {status.cacheHits > 0 && (
+            <p className="mt-1 text-xs text-muted" data-testid="ai-cache-hits">
+              {status.cacheHits} answer{status.cacheHits === 1 ? ' was' : 's were'} reused today, at
+              no cost.
+            </p>
+          )}
+          <History status={status} />
           <p className="mt-2 text-xs text-muted">
             Token counts are rough guides. Each provider card below shows what this app actually
             used today. You can also switch from the Co-Pilot panel at any time.

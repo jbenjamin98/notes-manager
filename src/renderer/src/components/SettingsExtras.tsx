@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ConfirmButton from './ConfirmButton'
 import type { CalendarStatus, GoogleStatus, Settings } from '@shared/contract'
 import { relativeTime, setAppTimezone } from '../format'
 import { useGoogleConnection } from '../hooks'
@@ -111,7 +112,7 @@ export function ConnectionPanel(): React.JSX.Element | null {
             className={
               good
                 ? btn
-                : 'rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50'
+                : 'rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50'
             }
             disabled={busy || conn.state === 'syncing'}
             onClick={() => void run(conn.action)}
@@ -150,13 +151,7 @@ const btn =
  * How this computer reaches Google. Colleagues sign in with the company's built-in Google sign-in
  * (nothing to create or paste); without it in this build, the private script is the way in.
  */
-export function GoogleSettings({
-  cal
-}: {
-  cal: CalendarStatus
-  onSync?: () => void
-  onConnect?: () => void
-}): React.JSX.Element {
+export function GoogleSettings({ cal }: { cal: CalendarStatus }): React.JSX.Element {
   const [cfg, setCfg] = useState<Settings['google']>({
     method: 'script',
     clientId: '',
@@ -258,12 +253,10 @@ export function GoogleSettings({
     return (
       <div className="space-y-3" data-testid="google-signin">
         <p className="rounded-xl border border-line bg-surface px-3 py-2 text-xs text-muted">
-          Google sign-in is not set up in this build, so this computer uses your private script
-          (above). Builds for your company include sign-in: then everyone just presses Sign In With
-          Google.
+          This computer reads Google through your private script (above). Calendar refreshes about
+          every 5 minutes and mail about every 20.
         </p>
         {toggles}
-        <p className="text-xs text-muted">Refreshes automatically every 15 minutes.</p>
       </div>
     )
 
@@ -290,13 +283,20 @@ export function GoogleSettings({
               </button>
             </>
           ) : (
-            <button
-              className="btn-primary rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-60"
-              disabled={busy}
-              onClick={() => void connectApi()}
-            >
-              {busy ? 'Waiting for Sign-In…' : 'Sign In With Google'}
-            </button>
+            <>
+              <button
+                className="btn-primary rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-60"
+                disabled={busy}
+                onClick={() => void connectApi()}
+              >
+                {busy ? 'Waiting for Sign-In…' : 'Sign In With Google'}
+              </button>
+              {busy && (
+                <button className={btn} onClick={() => void window.api.invoke('google:api-cancel')}>
+                  Cancel
+                </button>
+              )}
+            </>
           )}
         </div>
         {msg && (
@@ -315,7 +315,8 @@ export function GoogleSettings({
       )}
       {toggles}
       <p className="text-xs text-muted">
-        Changing Meet notes or Chat options takes effect the next time you sign in.
+        Calendar refreshes about every 5 minutes and mail about every 20. Changing Meet notes takes
+        effect the next time you sign in.
       </p>
     </div>
   )
@@ -376,22 +377,17 @@ export function PrivacySettings(): React.JSX.Element {
         memory to find actions and decisions: just those points and a short excerpt are kept. Clear
         the list if you no longer want it there; it is rebuilt at the next mail sync.
       </p>
-      <button
+      <ConfirmButton
+        label="Clear stored email data"
+        confirmLabel="Click again to remove all stored email data"
         className={btn}
-        onClick={async () => {
-          if (
-            !window.confirm(
-              'Remove all stored email subjects, senders and dates from this computer?'
-            )
-          )
-            return
+        armedClassName="!border-danger/40 !bg-danger/15 !text-danger"
+        onConfirm={async () => {
           const r = await window.api.invoke('mail:clear')
           setCleared(r.ok)
           setTimeout(() => setCleared(false), 3000)
         }}
-      >
-        Clear stored email data
-      </button>
+      />
       {cleared && <span className="ml-2 text-xs text-ok">Cleared.</span>}
     </>
   )

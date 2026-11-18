@@ -240,9 +240,19 @@ function StepArt({ step }: { step: number }): React.JSX.Element {
   )
 }
 
-export default function SetupGuide({ onFinish }: { onFinish: () => void }): React.JSX.Element {
+/**
+ * `onFinish` marks setup as done for good. `onClose` (Esc, "Skip for now") only hides the guide for
+ * this session, so a stray key press never ends first-run: it comes back next launch until finished.
+ */
+export default function SetupGuide({
+  onFinish,
+  onClose
+}: {
+  onFinish: () => void
+  onClose: () => void
+}): React.JSX.Element {
   const dialog = useRef<HTMLDivElement>(null)
-  useFocusTrap(dialog, onFinish)
+  useFocusTrap(dialog, onClose)
   const [step, setStep] = useState(0)
   const [dir, setDir] = useState<'fwd' | 'back'>('fwd')
   const [vault, setVault] = useState('')
@@ -321,14 +331,14 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Setup guide"
       onKeyDown={onKey}
     >
       {celebrate > 0 && <Confetti nonce={celebrate} onDone={() => undefined} />}
       <div
         ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Setup guide"
         className="glass spring-in flex max-h-[92vh] w-[42rem] max-w-full flex-col overflow-hidden rounded-3xl"
       >
         {/* Progress: one bar that fills, and step dots that tick */}
@@ -345,10 +355,11 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
                 key={s}
                 onClick={() => void go(i)}
                 aria-current={i === step ? 'step' : undefined}
+                aria-label={`Step ${i + 1}: ${s}`}
                 className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs transition ${i === step ? 'bg-accent-soft font-semibold text-fg' : 'text-muted hover:text-fg'}`}
               >
                 <span
-                  className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] transition-colors ${i < step ? 'bg-accent text-accent-fg' : i === step ? 'border-2 border-accent' : 'border border-line'}`}
+                  className={`flex h-5 w-5 items-center justify-center rounded-full text-xs transition-colors ${i < step ? 'bg-accent text-accent-fg' : i === step ? 'border-2 border-accent' : 'border border-line'}`}
                 >
                   {i < step ? <span className="pop">✓</span> : ''}
                 </span>
@@ -389,7 +400,8 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
               <div className="wiz-stagger text-center">
                 <h1 className="text-2xl font-semibold tracking-tight">Welcome to Note Manager</h1>
                 <p className="mt-2 text-sm text-muted">
-                  Three minutes to set up. You can change everything later in Settings.
+                  A few minutes to set up, and every step is optional. You can change everything
+                  later in Settings.
                 </p>
                 <ul className="mx-auto mt-5 grid max-w-xl gap-2.5 text-left text-sm sm:grid-cols-2">
                   {[
@@ -443,7 +455,7 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
                     }}
                     onBlur={() => void saveName()}
                     onKeyDown={(e) => e.key === 'Enter' && void saveName()}
-                    placeholder="e.g. Jacob Benjamin"
+                    placeholder="e.g. Alex Morgan"
                     className="w-full rounded-lg border border-line bg-field px-3 py-1.5 pr-8 text-sm"
                   />
                   {nameSaved && name.trim() && (
@@ -485,6 +497,14 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
                     >
                       {oauthBusy ? 'Waiting for Sign-In…' : 'Sign In With Google'}
                     </button>
+                    {oauthBusy && (
+                      <button
+                        className={`${btn} mt-2 ml-2`}
+                        onClick={() => void window.api.invoke('google:api-cancel')}
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 )}
                 <div className="mt-4">
@@ -495,6 +515,12 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
                   </p>
                   <BridgeSetup />
                 </div>
+                <button
+                  className="mt-4 text-sm text-muted underline-offset-2 hover:text-fg hover:underline"
+                  onClick={() => void go(3)}
+                >
+                  Skip Google for now
+                </button>
               </div>
             )}
 
@@ -545,8 +571,16 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
           </button>
           <span className="flex-1" />
           {!last && (
-            <button className="text-sm text-muted hover:text-fg" onClick={onFinish}>
-              {step === 3 && !aiOn ? 'Skip AI and Finish' : 'Skip Setup'}
+            <button
+              className="text-sm text-muted hover:text-fg"
+              onClick={step === 3 && !aiOn ? onFinish : onClose}
+              title={
+                step === 3 && !aiOn
+                  ? 'Finish without AI. You can turn it on later in Settings.'
+                  : 'Hide the guide now. It returns next launch until you finish it.'
+              }
+            >
+              {step === 3 && !aiOn ? 'Skip AI and Finish' : 'Skip for now'}
             </button>
           )}
           <button className={primary} onClick={next} data-testid="setup-next">

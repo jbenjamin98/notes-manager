@@ -87,7 +87,7 @@ export default function MiniCalendar({
           ›
         </button>
       </header>
-      <div className="grid grid-cols-7 text-center text-[10px] font-semibold text-muted">
+      <div className="grid grid-cols-7 text-center text-xs font-semibold text-muted">
         {WEEKDAYS.map((w, i) => (
           <span key={i}>{w}</span>
         ))}
@@ -106,7 +106,7 @@ export default function MiniCalendar({
               aria-pressed={isPicked}
               className={`relative mx-auto flex h-8 w-8 flex-col items-center justify-center rounded-lg tabular-nums ${
                 isPicked
-                  ? 'bg-accent text-white'
+                  ? 'bg-accent text-accent-fg'
                   : isToday
                     ? 'bg-accent-soft font-semibold text-accent'
                     : inMonth
@@ -131,7 +131,7 @@ export default function MiniCalendar({
       </div>
 
       <div className="mt-3 border-t border-line pt-2" data-testid="mini-agenda">
-        <p className="mb-1 flex items-center text-[11px] font-semibold tracking-[0.1em] text-muted uppercase">
+        <p className="mb-1 flex items-center text-xs font-semibold tracking-wide text-muted uppercase">
           {picked === today ? 'Today' : shortDate(picked)}
           <button
             className="ml-auto font-medium tracking-normal normal-case hover:text-accent hover:underline"

@@ -17,6 +17,15 @@ export interface OAuthLike {
   calendar(): Promise<CalendarScrape>
   gmail(o: CrawlOptions): Promise<GmailScrape>
   mailBodies(ids: string[]): Promise<MailBody[]>
+  /** Meet notes into the vault and recent Chat into the index. Reports errors, never throws. */
+  extras(vault: Vault | null): Promise<void>
+}
+
+/** What the script path needs to bring in Meet notes and Chat (the OAuth path has its own). */
+export interface ExtrasDeps {
+  db: Db
+  settings: () => { meetNotes: boolean; meetFullText?: boolean }
+  onMeeting?: (m: MeetingRead) => Promise<unknown>
 }
 
 const signedOutCal: CalendarScrape = {
@@ -30,7 +39,8 @@ const signedOutCal: CalendarScrape = {
 export class GoogleHub {
   constructor(
     private oauth: OAuthLike,
-    private bridge: BridgeClient
+    private bridge: BridgeClient,
+    private extrasDeps?: ExtrasDeps
   ) {}
 
   private soft<T>(err: unknown, empty: T): T {
@@ -47,6 +57,27 @@ export class GoogleHub {
     } catch (err) {
       return this.soft(err, signedOutCal)
     }
+  }
+
+  /**
+   * Meet notes and Chat from whichever source is active (one call, so nobody else has to know which
+   * mode is in use). Returns an error message to show, or null.
+   */
+  async extras(vault: Vault | null): Promise<string | null> {
+    if (this.oauth.active()) {
+      await this.oauth.extras(vault)
+      return null
+    }
+    const d = this.extrasDeps
+    if (!d) return null
+    const s = d.settings()
+    return bridgeExtras(
+      this.bridge,
+      d.db,
+      vault,
+      { meetNotes: s.meetNotes, meetFullText: s.meetFullText, chat: true },
+      d.onMeeting
+    )
   }
 
   /** Is any source set up to read mail? */

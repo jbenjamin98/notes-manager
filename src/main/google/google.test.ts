@@ -53,7 +53,8 @@ async function fakeGoogle(): Promise<{
           access_token: `at-${tokens.length}`,
           refresh_token: form.grant_type === 'authorization_code' ? 'rt-1' : undefined,
           expires_in: 3600,
-          scope: 'openid email https://www.googleapis.com/auth/calendar.readonly'
+          scope:
+            'openid email https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/chat.spaces.readonly https://www.googleapis.com/auth/chat.messages.readonly'
         })
       }
       if (
@@ -290,6 +291,48 @@ describe('Google OAuth (PKCE, loopback)', () => {
     const redirect = new URL(opened[0]).searchParams.get('redirect_uri')!
     await fetch(`${redirect}/?error=access_denied`)
     await rej
+  })
+})
+
+describe('Google OAuth: cancel, one sign-in at a time, one refresh at a time', () => {
+  it('cancelling a waiting sign-in stops it, and a new one can start', async () => {
+    const g = await fakeGoogle()
+    servers.push(g.server)
+    const opened: string[] = []
+    const o = oauth(g.base, { rt: null }, opened)
+    const p = o.connect(['openid'])
+    const rej = expect(p).rejects.toMatchObject({ message: 'Sign-in cancelled.' })
+    for (let i = 0; i < 50 && opened.length === 0; i++) await new Promise((r) => setTimeout(r, 20))
+    o.cancel()
+    await rej
+    const again = o.connect(['openid'])
+    const rej2 = expect(again).rejects.toMatchObject({ message: 'Sign-in cancelled.' })
+    for (let i = 0; i < 50 && opened.length < 2; i++) await new Promise((r) => setTimeout(r, 20))
+    o.cancel()
+    await rej2
+  })
+
+  it('a second sign-in while one is open is refused instead of opening another tab', async () => {
+    const g = await fakeGoogle()
+    servers.push(g.server)
+    const opened: string[] = []
+    const o = oauth(g.base, { rt: null }, opened)
+    const first = o.connect(['openid'])
+    const rej = expect(first).rejects.toBeInstanceOf(OAuthError)
+    for (let i = 0; i < 50 && opened.length === 0; i++) await new Promise((r) => setTimeout(r, 20))
+    await expect(o.connect(['openid'])).rejects.toMatchObject({ code: 'token' })
+    expect(opened).toHaveLength(1)
+    o.cancel()
+    await rej
+  })
+
+  it('parallel requests share one token refresh', async () => {
+    const g = await fakeGoogle()
+    servers.push(g.server)
+    const o = oauth(g.base, { rt: 'rt-saved' })
+    const tokens = await Promise.all([o.accessToken(), o.accessToken(), o.accessToken()])
+    expect(new Set(tokens).size).toBe(1)
+    expect(g.tokens).toHaveLength(1)
   })
 })
 

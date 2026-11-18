@@ -74,9 +74,7 @@ function Stat({
   const shown = useCountUp(value)
   return (
     <button onClick={onClick} className={card}>
-      <div className="text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
-        {label}
-      </div>
+      <div className="text-xs font-semibold tracking-wide text-muted uppercase">{label}</div>
       <div
         className={`mt-1 text-4xl font-semibold tabular-nums ${tone === 'warn' && value > 0 ? 'text-warn' : ''}`}
       >
@@ -362,7 +360,7 @@ export default function Dashboard({
                 </section>
 
                 <section aria-label="Browse your notes">
-                  <h2 className="mb-4 text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
+                  <h2 className="mb-4 text-xs font-semibold tracking-wide text-muted uppercase">
                     Browse Your Notes
                   </h2>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

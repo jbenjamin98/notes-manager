@@ -18,6 +18,9 @@ export interface RateLimits {
   limitRequests: number | null
   remainingTokens: number | null
   limitTokens: number | null
+  /** When the request / token allowance refills (ms since epoch), when the provider says. */
+  resetRequestsAt?: number | null
+  resetTokensAt?: number | null
 }
 
 export interface ProviderResult {
@@ -117,17 +120,39 @@ export class LlmHttpError extends Error {
   constructor(
     public status: number,
     message: string,
-    public retryAfterSec: number | null = null
+    public retryAfterSec: number | null = null,
+    /** The provider's rate-limit headers on this failure (a 429 says exactly what ran out). */
+    public limits: RateLimits | null = null
   ) {
     super(message)
   }
 }
 
-const retryAfter = (res: Response): number | null => {
-  const v = res.headers.get('retry-after')
-  const n = v ? Number(v) : NaN
-  return Number.isFinite(n) ? n : null
+/** Retry-After is either a number of seconds or an HTTP date. */
+export function parseRetryAfter(v: string | null, now = Date.now()): number | null {
+  if (!v) return null
+  const n = Number(v)
+  if (Number.isFinite(n)) return Math.max(0, n)
+  const t = Date.parse(v)
+  return Number.isFinite(t) ? Math.max(0, Math.ceil((t - now) / 1000)) : null
 }
+
+/** "6m0s", "1.5s", "250ms", "1h2m" (OpenAI/Groq reset headers) as milliseconds. */
+export function parseDurationMs(v: string | null): number | null {
+  if (!v) return null
+  const plain = Number(v)
+  if (Number.isFinite(plain)) return plain * 1000
+  let total = 0
+  let any = false
+  for (const m of v.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+    any = true
+    const n = Number(m[1])
+    total += m[2] === 'ms' ? n : m[2] === 'h' ? n * 3_600_000 : m[2] === 'm' ? n * 60_000 : n * 1000
+  }
+  return any ? total : null
+}
+
+const retryAfter = (res: Response): number | null => parseRetryAfter(res.headers.get('retry-after'))
 
 async function failure(res: Response): Promise<never> {
   let detail = ''
@@ -139,7 +164,8 @@ async function failure(res: Response): Promise<never> {
   throw new LlmHttpError(
     res.status,
     `HTTP ${res.status}${detail ? `: ${detail}` : ''}`,
-    retryAfter(res)
+    retryAfter(res),
+    parseLimits(res.headers, 'openai') ?? parseLimits(res.headers, 'anthropic')
   )
 }
 
@@ -149,26 +175,47 @@ const num = (v: string | null): number | null => {
 }
 
 /** OpenAI, Groq and Anthropic report their rate-limit window in response headers; Gemini does not. */
-export function parseLimits(h: Headers, prefix: 'openai' | 'anthropic'): RateLimits | null {
+export function parseLimits(
+  h: Headers,
+  prefix: 'openai' | 'anthropic',
+  now = Date.now()
+): RateLimits | null {
   const g =
     prefix === 'openai'
       ? {
           rr: 'x-ratelimit-remaining-requests',
           lr: 'x-ratelimit-limit-requests',
           rt: 'x-ratelimit-remaining-tokens',
-          lt: 'x-ratelimit-limit-tokens'
+          lt: 'x-ratelimit-limit-tokens',
+          xr: 'x-ratelimit-reset-requests',
+          xt: 'x-ratelimit-reset-tokens'
         }
       : {
           rr: 'anthropic-ratelimit-requests-remaining',
           lr: 'anthropic-ratelimit-requests-limit',
           rt: 'anthropic-ratelimit-tokens-remaining',
-          lt: 'anthropic-ratelimit-tokens-limit'
+          lt: 'anthropic-ratelimit-tokens-limit',
+          xr: 'anthropic-ratelimit-requests-reset',
+          xt: 'anthropic-ratelimit-tokens-reset'
         }
+  // OpenAI-style resets are durations from now; Anthropic's are RFC 3339 timestamps.
+  const at = (name: string): number | null => {
+    const v = h.get(name)
+    if (!v) return null
+    if (prefix === 'anthropic') {
+      const t = Date.parse(v)
+      return Number.isFinite(t) ? t : null
+    }
+    const d = parseDurationMs(v)
+    return d === null ? null : now + d
+  }
   const l: RateLimits = {
     remainingRequests: num(h.get(g.rr)),
     limitRequests: num(h.get(g.lr)),
     remainingTokens: num(h.get(g.rt)),
-    limitTokens: num(h.get(g.lt))
+    limitTokens: num(h.get(g.lt)),
+    resetRequestsAt: at(g.xr),
+    resetTokensAt: at(g.xt)
   }
   return Object.values(l).every((v) => v === null) ? null : l
 }

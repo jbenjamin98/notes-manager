@@ -68,6 +68,8 @@ export async function insightsFromMail(
     worthwhileThreadIds(deps.db, {}, { meAliases: deps.me() })
   )
   if (cands.length === 0) return 0
+  // No room for the model right now: do not even fetch the message bodies; try again later.
+  if (deps.headroom && !deps.headroom()) return 0
   const threads = await fetchBodies(cands.map((c) => c.id))
   const byId = new Map(cands.map((c) => [c.id, c]))
   let n = 0
@@ -81,6 +83,7 @@ export async function insightsFromMail(
       }))
       .filter((u) => u.text.length >= 12)
     const last = t.messages[t.messages.length - 1]
+    const deferredBefore = deps.stats?.deferred ?? 0
     if (us.length > 0 && last) {
       const added = await readSource(
         deps,
@@ -95,7 +98,9 @@ export async function insightsFromMail(
       )
       n += added.length
     }
-    if (cand) markRead(deps.db, `emailseen:${cand.id}`, cand.lastAt)
+    // A thread whose reading was postponed stays a candidate for the next run.
+    const postponed = (deps.stats?.deferred ?? 0) > deferredBefore
+    if (cand && !postponed) markRead(deps.db, `emailseen:${cand.id}`, cand.lastAt)
   }
   return n
 }

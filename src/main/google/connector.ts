@@ -36,6 +36,8 @@ export interface ConnectorStatus {
   email: string | null
   scopes: { calendar: boolean; gmail: boolean; meet: boolean; chat: boolean }
   lastError: string | null
+  /** The saved sign-in was revoked or expired; the user must sign in again. */
+  needsReauth?: boolean
   meet: { files: number; lastAt: string | null }
   chat: { messages: number; lastAt: string | null }
 }
@@ -81,6 +83,8 @@ export class GoogleConnector {
       loadRefreshToken: () => deps.secrets.get('google.refreshToken'),
       saveRefreshToken: (t) =>
         t ? deps.secrets.set('google.refreshToken', t) : deps.secrets.delete('google.refreshToken'),
+      // Google revoked the sign-in: remember it so the app says "sign in again", not "not set up".
+      onRevoked: () => kvSet(deps.db, 'google.reauth', '1'),
       openExternal: deps.openExternal,
       fetchImpl: deps.fetchImpl,
       authUrl: deps.authUrl,
@@ -122,6 +126,7 @@ export class GoogleConnector {
             : s.chat
       },
       lastError: this.lastError,
+      needsReauth: !this.oauth.connected() && kvGet(this.deps.db, 'google.reauth') === '1',
       meet: {
         files: (
           this.deps.db.prepare('SELECT count(*) AS c FROM meet_artifacts').get() as { c: number }
@@ -147,6 +152,7 @@ export class GoogleConnector {
     this.lastError = null
     try {
       await this.oauth.connect(scopes)
+      this.deps.db.prepare("DELETE FROM kv WHERE key = 'google.reauth'").run()
       const me = await this.api.get<{ email?: string }>(this.api.base('userinfo'))
       if (me.email) kvSet(this.deps.db, 'google.email', me.email)
     } catch (err) {
@@ -156,10 +162,17 @@ export class GoogleConnector {
     return this.status()
   }
 
+  /** Stop a sign-in that is waiting in the browser. */
+  cancelConnect(): void {
+    this.oauth.cancel()
+  }
+
   disconnect(): ConnectorStatus {
     this.oauth.disconnect()
     this.deps.db
-      .prepare("DELETE FROM kv WHERE key IN ('google.email','meet.lastAt','chat.lastAt')")
+      .prepare(
+        "DELETE FROM kv WHERE key IN ('google.email','meet.lastAt','chat.lastAt','google.reauth')"
+      )
       .run()
     this.lastError = null
     return this.status()
@@ -242,7 +255,9 @@ export class GoogleConnector {
         this.lastError = `Meet notes: ${(err as Error).message}`
       }
     }
-    {
+    // Chat only when its permission was actually granted; otherwise every sync would fail with a
+    // scope error that reconnecting cannot fix.
+    if (this.status().scopes.chat) {
       try {
         const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
         const msgs = await fetchChat(this.api, { sinceIso: since })

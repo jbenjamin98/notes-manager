@@ -57,6 +57,7 @@ export default function HomeView({
   onNewNote,
   onOpenEvent,
   onOpenTasks,
+  onOpenFilter,
   onCopilot,
   onPlan,
   onSettings,
@@ -69,6 +70,8 @@ export default function HomeView({
   onNewNote: () => void
   onOpenEvent: (id: string) => void
   onOpenTasks: () => void
+  /** Open the task list already narrowed to one filter. */
+  onOpenFilter: (f: 'overdue' | 'today') => void
   onCopilot: () => void
   onPlan: () => void
   onSettings: () => void
@@ -158,7 +161,7 @@ export default function HomeView({
         ? { big: '🎉', small: 'Clear day' }
         : {
             big: String(stats.open),
-            small: stats.open === 1 ? 'task left today' : 'tasks left today'
+            small: stats.open === 1 ? 'task due or overdue' : 'tasks due or overdue'
           }
 
   return (
@@ -175,7 +178,7 @@ export default function HomeView({
 
       <button
         onClick={onOpenTasks}
-        aria-label={`${stats.open} tasks left today. Open tasks.`}
+        aria-label={`${stats.open} tasks due or overdue. Open tasks.`}
         className="group relative h-52 w-52 rounded-full transition-transform hover:scale-[1.03]"
       >
         <svg viewBox="0 0 200 200" className="h-full w-full">
@@ -240,11 +243,16 @@ export default function HomeView({
         const overdue = mine.filter((t) => t.due !== null && t.due < today).length
         const dueToday = mine.filter((t) => t.due === today).length
         const rows: { label: string; n: number; tone?: string; run: () => void }[] = [
-          { label: 'Overdue tasks', n: overdue, tone: 'text-danger', run: onOpenTasks },
-          { label: 'Due today', n: dueToday, run: onOpenTasks },
+          {
+            label: 'Overdue tasks',
+            n: overdue,
+            tone: 'text-danger',
+            run: () => onOpenFilter('overdue')
+          },
+          { label: 'Due today', n: dueToday, run: () => onOpenFilter('today') },
           { label: 'Chats waiting for your reply', n: inbox.replies, run: onInbox },
           {
-            label: 'New in your Inbox (actions, decisions, risks)',
+            label: 'New actions, decisions and risks found',
             n: inbox.insights,
             run: onInbox
           },

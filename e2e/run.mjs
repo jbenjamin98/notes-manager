@@ -183,11 +183,11 @@ const fakeScript = createServer((req, res) => {
   const today = iso(new Date())
   const out =
     action === 'ping'
-      ? { ok: true, version: 5, contract: 1, email: me }
+      ? { ok: true, version: 8, contract: 1, email: me }
       : action === 'selfTest'
         ? {
             ok: true,
-            version: 5,
+            version: 8,
             email: me,
             sections: {
               calendar: { ok: true },
@@ -455,6 +455,21 @@ try {
     `(()=>{const b=[...document.querySelectorAll('main button h3, .lib-item h3')][0];b&&b.closest('button').click()})()`
   )
   await sleep(900)
+  // Delete needs two clicks: the first only arms it, Esc disarms it, and nothing is deleted.
+  await main.ev(`document.querySelector('[data-testid=note-delete]')?.click()`)
+  await sleep(150)
+  const armed = await main.ev(`document.querySelector('[data-testid=note-delete]')?.dataset.armed`)
+  await main.ev(
+    `document.querySelector('[data-testid=note-delete]')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`
+  )
+  await sleep(150)
+  check(
+    'a first click on Delete only arms it; Esc disarms it and the note stays',
+    armed === 'true' &&
+      (await main.ev(`document.querySelector('[data-testid=note-delete]')?.dataset.armed`)) ===
+        'false' &&
+      (await main.ev(`!!document.querySelector('.cm-editor')`))
+  )
   await main.ev(`document.querySelector('[data-testid=nav-back]')?.click()`)
   await sleep(800)
   check(
@@ -467,7 +482,7 @@ try {
   await sleep(700)
   check(
     'the Home button opens the tasks gauge',
-    /tasks? left today/i.test(await text()) &&
+    /tasks? (due or overdue|left today)/i.test(await text()) &&
       (await main.ev(
         `document.querySelector('[data-testid=nav-home]').getAttribute('aria-current')`
       )) === 'page'
@@ -972,7 +987,7 @@ try {
   await main.ev(`document.querySelector('button[aria-label=Knowledge]').click()`)
   await sleep(500)
   await main.ev(
-    `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Word Map'))?.click()`
+    `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Topics'))?.click()`
   )
   await sleep(2500)
   check(
@@ -1051,7 +1066,7 @@ try {
   await main.ev(`document.querySelector('button[aria-label=Tasks]').click()`)
   await sleep(500)
   await main.ev(
-    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Tasks'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('All Tasks'))?.click()`
   )
   await sleep(900)
   check(
@@ -1064,7 +1079,7 @@ try {
 
   // Tasks dashboard: calendar, open tasks and the Action Center with scored mail
   await main.ev(
-    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Dashboard'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Overview'))?.click()`
   )
   await sleep(600)
   check(
@@ -1127,7 +1142,7 @@ try {
     dm.close()
   }
   await main.ev(
-    `document.querySelector('[data-testid=action-center] button[aria-label=Refresh]').click()`
+    `[...document.querySelectorAll('[data-testid=action-center] button')].find(b=>b.textContent.trim()==='Check now').click()`
   )
   await sleep(900)
   check(
@@ -1182,7 +1197,7 @@ try {
   )
   await main.ev(`document.querySelector('[data-testid=ac-tab-needs-you]').click()`)
   await main.ev(
-    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Tasks'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('All Tasks'))?.click()`
   )
   await sleep(600)
   check(
@@ -1301,9 +1316,7 @@ try {
     !(await text()).includes('Cutover moves to Dec 4')
   )
   await main.shot('07-inbox.png')
-  await main.ev(
-    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Decisions'))?.click()`
-  )
+  await main.ev(`document.querySelector('[data-testid=ac-section-facts]')?.click()`)
   await sleep(1000)
   check(
     'Decisions & Facts lists the decision to keep or mark not pertinent',
@@ -1312,6 +1325,21 @@ try {
     )
   )
   await main.shot('07b-facts.png')
+  // The Email and Chat lists are sections of the same page (no orphaned pages).
+  for (const [id, label] of [
+    ['mail', 'Email'],
+    ['chat', 'Chat']
+  ]) {
+    await main.ev(`document.querySelector('[data-testid=ac-section-${id}]')?.click()`)
+    await sleep(500)
+    check(
+      `the Action Center has an ${label} section`,
+      await main.ev(`!!document.querySelector('[data-testid=${id}-section]')`)
+    )
+  }
+  await main.shot('07c-mail-section.png')
+  await main.ev(`document.querySelector('[data-testid=ac-section-act]')?.click()`)
+  await sleep(300)
   await main.ev(
     `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Action Center'))?.click()`
   )

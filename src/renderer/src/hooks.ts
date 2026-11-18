@@ -5,6 +5,7 @@ import type {
   GmailOverview,
   GmailStatus,
   GoogleConnection,
+  LlmStatus,
   NoteSummary,
   TaskItem,
   UpcomingEvent,
@@ -130,6 +131,29 @@ export function useNow(ms = 60_000): number {
     return () => clearInterval(t)
   }, [ms])
   return now
+}
+
+/**
+ * The AI router's status (usage, budget, cooldowns, limits), kept live: main pushes `llm:changed`
+ * whenever a call is made or a provider is held back, and a slow tick keeps countdowns honest.
+ */
+export function useLlmStatus(): LlmStatus | null {
+  const [st, setSt] = useState<LlmStatus | null>(null)
+  useEffect(() => {
+    let alive = true
+    const load = (): void => {
+      void window.api.invoke('llm:status').then((r) => alive && r.ok && setSt(r.data))
+    }
+    load()
+    const offs = [window.api.on('llm:changed', load), window.api.on('settings:changed', load)]
+    const t = setInterval(load, 60_000)
+    return () => {
+      alive = false
+      offs.forEach((off) => off())
+      clearInterval(t)
+    }
+  }, [])
+  return st
 }
 
 /**

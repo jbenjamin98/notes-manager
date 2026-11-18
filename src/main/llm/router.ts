@@ -36,6 +36,8 @@ export interface RouterDeps {
   fetchImpl?: typeof fetch
   now?: () => number
   timeoutMs?: number
+  /** Called (cheaply, often) when usage or a provider's state changed, so screens can refresh. */
+  onChange?: () => void
 }
 
 /** Why a call could not be made at all (the caller falls back to local behaviour). */
@@ -71,6 +73,25 @@ const BREAKER_MS = 2 * 60_000
 const AUTH_COOLDOWN_MS = 10 * 60_000
 const DEFAULT_429_MS = 60_000
 const CACHE_TTL_MS = 60 * 60_000
+/** Statuses that mean "slow down / overloaded": cool the provider off instead of counting a failure. */
+const THROTTLE = new Set([429, 503, 529])
+const ROLLUP_EVERY_MS = 60 * 60_000
+const RAW_DAYS = 3
+
+export interface LlmEvent {
+  ts: number
+  provider: ProviderId
+  status: number
+  retryAfterSec: number | null
+  feature: string | null
+}
+
+export interface UsageDay {
+  day: string
+  calls: number
+  fails: number
+  tokens: number
+}
 
 interface Health {
   fails: number
@@ -114,6 +135,8 @@ const stripFences = (s: string): string =>
 
 export class LlmRouter {
   private health = new Map<ProviderId, Health>()
+  private lastRollup = 0
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private deps: RouterDeps) {}
 
@@ -242,7 +265,162 @@ export class LlmRouter {
         'INSERT INTO llm_usage (provider, model, ts, ok, tokens_in, tokens_out, feature) VALUES (?,?,?,?,?,?,?)'
       )
       .run(p, model, this.now(), ok ? 1 : 0, tin, tout, feature)
-    this.deps.db.exec("DELETE FROM llm_usage WHERE ts < strftime('%s','now','-3 days') * 1000")
+    this.rollup()
+    this.changed()
+  }
+
+  /**
+   * Is there comfortable room for work that can wait (reading mail and meetings in the background)?
+   * False while the daily budget is nearly spent (80% to 99%), every provider is cooling down, or the
+   * providers report under 20% of their rate-limit window. When the budget is fully spent this is
+   * true on purpose: the normal path then falls back to on-computer rules by itself.
+   */
+  hasHeadroom(): boolean {
+    const b = this.budget()
+    if (b.limit > 0) {
+      const share = b.used / b.limit
+      if (share >= 0.8 && share < 1) return false
+    }
+    const live = this.status().providers.filter((p) => p.hasKey && p.enabled)
+    if (live.length === 0) return true
+    const ready = live.filter((p) => p.state === 'ready')
+    if (ready.length === 0) return live.every((p) => p.state === 'auth-failed')
+    const now = this.now()
+    const roomy = (p: (typeof ready)[number]): boolean => {
+      const l = p.limits
+      if (!l || now - l.seenAt > 120_000) return true
+      const r = l.limitRequests ? (l.remainingRequests ?? Infinity) / l.limitRequests : 1
+      const t = l.limitTokens ? (l.remainingTokens ?? Infinity) / l.limitTokens : 1
+      return Math.min(r, t) >= 0.2
+    }
+    return ready.some(roomy)
+  }
+
+  /** Tell listeners something changed, at most about once a second. */
+  private changed(): void {
+    if (!this.deps.onChange || this.notifyTimer) return
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null
+      this.deps.onChange?.()
+    }, 1000)
+  }
+
+  /**
+   * Keep full detail for the last few days, and fold older calls into one row per day, provider and
+   * purpose (so a month view costs almost nothing). Runs at most hourly.
+   */
+  private rollup(): void {
+    const now = this.now()
+    if (now - this.lastRollup < ROLLUP_EVERY_MS) return
+    this.lastRollup = now
+    const cutoff = new Date(now)
+    cutoff.setHours(0, 0, 0, 0)
+    cutoff.setDate(cutoff.getDate() - RAW_DAYS)
+    const db = this.deps.db
+    db.exec('BEGIN')
+    try {
+      db.prepare(
+        `INSERT INTO llm_usage_daily (day, provider, feature, calls, fails, tokens_in, tokens_out)
+         SELECT date(ts / 1000, 'unixepoch', 'localtime'), provider, coalesce(feature, 'other'),
+                count(*), coalesce(sum(1 - ok), 0), coalesce(sum(tokens_in), 0), coalesce(sum(tokens_out), 0)
+           FROM llm_usage WHERE ts < ? GROUP BY 1, 2, 3
+         ON CONFLICT(day, provider, feature) DO UPDATE SET
+           calls = calls + excluded.calls, fails = fails + excluded.fails,
+           tokens_in = tokens_in + excluded.tokens_in, tokens_out = tokens_out + excluded.tokens_out`
+      ).run(cutoff.getTime())
+      db.prepare('DELETE FROM llm_usage WHERE ts < ?').run(cutoff.getTime())
+      db.prepare(
+        "DELETE FROM llm_usage_daily WHERE day < date('now', '-90 days', 'localtime')"
+      ).run()
+      db.exec(
+        'DELETE FROM llm_events WHERE id NOT IN (SELECT id FROM llm_events ORDER BY id DESC LIMIT 200)'
+      )
+      db.prepare("DELETE FROM kv WHERE key LIKE 'llm.cachehits.%' AND key <> ?").run(
+        this.cacheKeyToday()
+      )
+      db.exec("DELETE FROM llm_cache WHERE created_at < datetime('now', '-30 days')")
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  private cacheKeyToday(): string {
+    const d = new Date(this.now())
+    return `llm.cachehits.${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+  }
+
+  private countCacheHit(): void {
+    this.deps.db
+      .prepare(
+        'INSERT INTO kv (key, value) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1'
+      )
+      .run(this.cacheKeyToday())
+    this.changed()
+  }
+
+  /** Answers reused from the cache today (they cost no tokens). */
+  cacheHitsToday(): number {
+    const r = this.deps.db
+      .prepare('SELECT value FROM kv WHERE key = ?')
+      .get(this.cacheKeyToday()) as { value: string } | undefined
+    return r ? Number(r.value) || 0 : 0
+  }
+
+  /** Recent rate-limit and overload events, newest first. */
+  recentEvents(limit = 10): LlmEvent[] {
+    return this.deps.db
+      .prepare(
+        'SELECT ts, provider, status, retry_after_sec AS retryAfterSec, feature FROM llm_events ORDER BY id DESC LIMIT ?'
+      )
+      .all(limit) as unknown as LlmEvent[]
+  }
+
+  /** Calls and tokens per day for the last `days` days (today included), oldest first. */
+  history(days = 7): UsageDay[] {
+    const db = this.deps.db
+    const start = new Date(this.now())
+    start.setHours(0, 0, 0, 0)
+    start.setDate(start.getDate() - (days - 1))
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const rows = new Map<string, UsageDay>()
+    const add = (day: string, calls: number, fails: number, tokens: number): void => {
+      const x = rows.get(day) ?? { day, calls: 0, fails: 0, tokens: 0 }
+      x.calls += calls
+      x.fails += fails
+      x.tokens += tokens
+      rows.set(day, x)
+    }
+    for (const r of db
+      .prepare(
+        'SELECT day, sum(calls) AS c, sum(fails) AS f, sum(tokens_in + tokens_out) AS t FROM llm_usage_daily WHERE day >= ? GROUP BY day'
+      )
+      .all(fmt(start)) as unknown as { day: string; c: number; f: number; t: number }[])
+      add(r.day, r.c, r.f, r.t)
+    for (const r of db
+      .prepare(
+        "SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, count(*) AS c, coalesce(sum(1 - ok), 0) AS f, coalesce(sum(coalesce(tokens_in,0) + coalesce(tokens_out,0)), 0) AS t FROM llm_usage WHERE ts >= ? GROUP BY 1"
+      )
+      .all(start.getTime()) as unknown as { day: string; c: number; f: number; t: number }[])
+      add(r.day, r.c, r.f, r.t)
+    const out: UsageDay[] = []
+    for (let i = 0; i < days; i++) {
+      const d = new Date(start)
+      d.setDate(start.getDate() + i)
+      const k = fmt(d)
+      out.push(rows.get(k) ?? { day: k, calls: 0, fails: 0, tokens: 0 })
+    }
+    return out
+  }
+
+  private saveLimits(p: ProviderId, limits: RateLimits): void {
+    this.deps.db
+      .prepare(
+        'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+      )
+      .run('llm.limits.' + p, JSON.stringify({ ...limits, seenAt: this.now() }))
   }
 
   private async callOnce(
@@ -270,15 +448,11 @@ export class LlmRouter {
       )
       const usedModel = res.model ?? model
       this.log(p, usedModel, true, res.tokensIn, res.tokensOut, feature)
-      if (res.limits) {
-        this.deps.db
-          .prepare(
-            'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
-          )
-          .run('llm.limits.' + p, JSON.stringify({ ...res.limits, seenAt: this.now() }))
-      }
+      if (res.limits) this.saveLimits(p, res.limits)
       return { text: res.text, model: usedModel }
     } catch (err) {
+      // A 429 says exactly what ran out; keep that so the settings screen can show it.
+      if (err instanceof LlmHttpError && err.limits) this.saveLimits(p, err.limits)
       this.log(p, model, false, null, null, feature)
       throw err
     } finally {
@@ -308,8 +482,10 @@ export class LlmRouter {
         .get(cacheId) as { r: string; at: string } | undefined
       if (hit && now - new Date(hit.at + 'Z').getTime() < (req.cacheTtlMs ?? CACHE_TTL_MS)) {
         const parsed = req.schema.safeParse(JSON.parse(hit.r))
-        if (parsed.success)
+        if (parsed.success) {
+          this.countCacheHit()
           return { data: parsed.data, provider: cfg.order[0], model: 'cache', cached: true }
+        }
       }
     }
 
@@ -402,8 +578,20 @@ export class LlmRouter {
         const msg = (err as Error).message
         x.lastError = msg.slice(0, 200)
         errors.push(`${p}: ${msg.slice(0, 120)}`)
-        if (err instanceof LlmHttpError && err.status === 429) {
-          x.openUntil = this.now() + Math.max(5, err.retryAfterSec ?? DEFAULT_429_MS / 1000) * 1000
+        if (err instanceof LlmHttpError && THROTTLE.has(err.status)) {
+          const reset = [err.limits?.resetRequestsAt, err.limits?.resetTokensAt]
+            .filter((t): t is number => typeof t === 'number' && t > this.now())
+            .sort((a, b) => a - b)[0]
+          const waitSec =
+            err.retryAfterSec ??
+            (reset ? Math.ceil((reset - this.now()) / 1000) : DEFAULT_429_MS / 1000)
+          x.openUntil = this.now() + Math.max(5, Math.min(waitSec, 3600)) * 1000
+          this.deps.db
+            .prepare(
+              'INSERT INTO llm_events (ts, provider, status, retry_after_sec, feature) VALUES (?,?,?,?,?)'
+            )
+            .run(this.now(), p, err.status, Math.round(waitSec), req.feature ?? null)
+          this.changed()
         } else if (err instanceof LlmHttpError && (err.status === 401 || err.status === 403)) {
           x.authFailedUntil = this.now() + AUTH_COOLDOWN_MS
         } else {

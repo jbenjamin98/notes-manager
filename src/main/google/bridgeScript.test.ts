@@ -181,7 +181,7 @@ describe('Apps Script bridge (the real Code.gs)', () => {
   it('ping reports version, contract and who it runs as', () => {
     expect(load()({ action: 'ping', token: TOKEN })).toMatchObject({
       ok: true,
-      version: 7,
+      version: 8,
       contract: 1,
       email: 'Me@Example.com'
     })
@@ -247,7 +247,7 @@ describe('Apps Script bridge (the real Code.gs)', () => {
     ])
   })
 
-  it('mail: metadata rows with labels, unread/starred, newest sender first, and never a body', () => {
+  it('mail: metadata rows with labels, unread/starred, senders oldest to newest, and never a body', () => {
     const get = load({
       threads: {
         t1: {
@@ -284,9 +284,34 @@ describe('Apps Script bridge (the real Code.gs)', () => {
       labels: ['Inbox', 'Jira'],
       lastMs: 1763051220000
     })
-    expect(r.rows[0].senders[0]).toEqual({ name: 'me', email: 'me@example.com' })
+    // Sarah wrote first and I replied last, so I am the last entry.
+    expect(r.rows[0].senders.map((s: { email: string }) => s.email)).toEqual([
+      'sarah@example.com',
+      'me@example.com'
+    ])
     expect(r.historyId).toBe('999')
     expect(JSON.stringify(r)).not.toMatch(/"body"|"parts"/)
+  })
+
+  it('mail: the last sender is whoever wrote last, even when I started the thread', () => {
+    const get = load({
+      threads: {
+        t1: {
+          id: 't1',
+          messages: [
+            msg('m1', 'me@example.com', 'Plan', ['INBOX'], 1763047620000),
+            msg('m2', 'Sarah Chen <sarah@example.com>', 'Re: Plan', ['INBOX'], 1763051220000),
+            msg('m3', 'me@example.com', 'Re: Plan', ['INBOX'], 1763054820000),
+            msg('m4', 'Sarah Chen <sarah@example.com>', 'Re: Plan', ['INBOX'], 1763058420000)
+          ]
+        }
+      }
+    })
+    const r = get({ action: 'mail', token: TOKEN, days: '30' })
+    expect(r.rows[0].senders.map((s: { email: string }) => s.email)).toEqual([
+      'me@example.com',
+      'sarah@example.com'
+    ])
   })
 
   it('mail: incremental by history id, and asks for a full resync when the history is too old', () => {
@@ -409,7 +434,7 @@ describe('Apps Script bridge (the real Code.gs)', () => {
     expect(r.sections.calendar).toMatchObject({ ok: false, error: 'Calendar is off' })
     expect(r.sections.mail.ok).toBe(true)
     expect(r.sections.chat.ok).toBe(true)
-    expect(r.version).toBe(7)
+    expect(r.version).toBe(8)
   })
 
   it('selfTest runs each section briefly', () => {

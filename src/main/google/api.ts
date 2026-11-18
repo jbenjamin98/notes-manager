@@ -53,23 +53,24 @@ export class GoogleApi {
     return this.deps.bases?.[k] ?? DEFAULT_BASES[k]
   }
 
-  async get<T>(url: string, retried = false): Promise<T> {
+  /** One retry for an expired token and, separately, one for a rate limit (each has its own flag). */
+  async get<T>(url: string, tried: { auth?: boolean; rate?: boolean } = {}): Promise<T> {
     const f = this.deps.fetchImpl ?? fetch
-    const token = await this.deps.token(retried)
+    const token = await this.deps.token(!!tried.auth)
     if (!token) throw new ApiError(401, 'Not connected to Google.', 'auth')
     const res = await f(url, { headers: { authorization: `Bearer ${token}` } })
     if (res.ok) return (await res.json()) as T
-    if (res.status === 401 && !retried) return this.get<T>(url, true)
+    if (res.status === 401 && !tried.auth) return this.get<T>(url, { ...tried, auth: true })
     const body = await res.text().catch(() => '')
     if (res.status === 429 || res.status === 503) {
-      if (!retried) {
+      if (!tried.rate) {
         const wait = Number(res.headers.get('retry-after')) || 2
         await new Promise((r) => setTimeout(r, Math.min(wait, 10) * 1000))
-        return this.get<T>(url, true)
+        return this.get<T>(url, { ...tried, rate: true })
       }
       throw new ApiError(
         res.status,
-        'Google is rate-limiting requests. It will retry later.',
+        'Google is limiting how fast requests can be made right now. It will try again in a minute or two.',
         'rate'
       )
     }

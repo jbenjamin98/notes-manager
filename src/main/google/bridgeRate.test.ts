@@ -75,10 +75,10 @@ describe('Google rate limits', () => {
     const db = openDb(':memory:')
     const c = client(async (u) => {
       const a = new URL(u).searchParams.get('action')
-      if (a === 'ping') return json({ ok: true, version: 5, contract: 1, email: 'me@x.com' })
+      if (a === 'ping') return json({ ok: true, version: 8, contract: 1, email: 'me@x.com' })
       return json({
         ok: true,
-        version: 5,
+        version: 8,
         email: 'me@x.com',
         sections: {
           calendar: { ok: true },

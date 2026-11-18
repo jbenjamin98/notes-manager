@@ -100,7 +100,15 @@ export default function ActionCard({
   }
 
   const dismiss = (): void => {
-    if (item.kind === 'email') void run(window.api.invoke('gmail:dismiss', { id: item.id }))
+    if (item.kind === 'email')
+      void run(
+        window.api.invoke('gmail:dismiss', { id: item.id }),
+        'Dismissed.',
+        () =>
+          void window.api
+            .invoke('gmail:dismiss', { id: item.id, undo: true })
+            .then(() => onChanged())
+      )
     else if (item.kind === 'chat')
       void run(
         window.api.invoke('chat:feedback', {
@@ -109,7 +117,15 @@ export default function ActionCard({
           relevant: false
         })
       )
-    else void run(window.api.invoke('inbox:dismiss', { id: item.id }))
+    else
+      void run(
+        window.api.invoke('inbox:dismiss', { id: item.id }),
+        'Dismissed.',
+        () =>
+          void window.api
+            .invoke('inbox:dismiss', { id: item.id, undo: true })
+            .then(() => onChanged())
+      )
   }
 
   const t = item.kind === 'email' ? item.thread : null
@@ -222,7 +238,7 @@ export default function ActionCard({
             <p className={`min-w-0 flex-1 truncate text-sm ${item.unread ? 'font-semibold' : ''}`}>
               {item.title}
             </p>
-            <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${level.tone}`}>
+            <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs ${level.tone}`}>
               {level.label}
             </span>
           </div>
@@ -236,10 +252,7 @@ export default function ActionCard({
           {item.reasons.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {item.reasons.slice(0, 3).map((r) => (
-                <span
-                  key={r}
-                  className="rounded-full bg-hover px-1.5 py-0.5 text-[10px] text-muted"
-                >
+                <span key={r} className="rounded-full bg-hover px-1.5 py-0.5 text-xs text-muted">
                   {r}
                 </span>
               ))}

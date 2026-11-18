@@ -1,4 +1,5 @@
 import type { Db } from '../db'
+import { isRateLimited } from '../google/rateLimit'
 import {
   normalizeRows,
   suggestTaskText,
@@ -762,7 +763,7 @@ export class GmailSync {
         this.set({ state: 'error', error: msg })
         // Google asked us to slow down: pause the big read, and try a small one a little later,
         // waiting longer each time (2, 5, 10, 20 minutes) so the limit can clear.
-        if (/try again in a minute|limiting how fast/i.test(msg) && !this.retry) {
+        if (isRateLimited(err) && !this.retry) {
           const wait = this.pauseFull()
           this.retry = setTimeout(
             () => {

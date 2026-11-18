@@ -11,7 +11,7 @@ describe('bridge self-test', () => {
     const db = openDb(':memory:')
     const r = await runSelfTest(
       fake({
-        ping: async () => ({ email: 'me@x.com', version: 5 }),
+        ping: async () => ({ email: 'me@x.com', version: 8 }),
         selfTest: async () => ({
           sections: { calendar: { ok: true }, chat: { ok: false, error: 'Chat is not available' } }
         })

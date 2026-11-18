@@ -29,7 +29,7 @@ function Block({
 }): React.JSX.Element {
   return (
     <section className="card-modern mb-4 p-4">
-      <h2 className="mb-2 flex items-center gap-2 text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
+      <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-wide text-muted uppercase">
         {title}
         {count !== undefined && (
           <span className="rounded-full bg-hover px-1.5 tabular-nums">{count}</span>

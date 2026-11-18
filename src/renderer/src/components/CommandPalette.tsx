@@ -124,7 +124,7 @@ export default function CommandPalette({
     }
     const cap: Record<Item['group'], number> = {
       'Inside notes': 6,
-      Actions: 8,
+      Actions: 14,
       Notes: 6,
       Tasks: 6,
       'People & accounts': 5
@@ -183,9 +183,19 @@ export default function CommandPalette({
           onKeyDown={onKey}
           placeholder="Search notes, tasks and people, or run an action…"
           aria-label="Search"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="palette-list"
+          aria-activedescendant={items[sel] ? `palette-opt-${sel}` : undefined}
           className="w-full border-b border-line bg-transparent px-4 py-3 text-sm outline-none"
         />
-        <ul ref={listRef} className="max-h-[50vh] overflow-y-auto p-1.5" role="listbox">
+        <ul
+          ref={listRef}
+          id="palette-list"
+          className="max-h-[50vh] overflow-y-auto p-1.5"
+          role="listbox"
+          aria-label="Results"
+        >
           {items.length === 0 && (
             <li className="px-3 py-6 text-center text-sm text-muted">No matches.</li>
           )}
@@ -201,6 +211,8 @@ export default function CommandPalette({
                 )}
                 <button
                   role="option"
+                  id={`palette-opt-${i}`}
+                  tabIndex={-1}
                   aria-selected={i === sel}
                   onMouseEnter={() => setSel(i)}
                   onClick={it.run}
@@ -214,7 +226,10 @@ export default function CommandPalette({
           })}
         </ul>
         <div className="border-t border-line px-4 py-1.5 text-xs text-muted">
-          ↑↓ to move · Enter to open · Esc to close
+          <>
+            <kbd>↑</kbd>
+            <kbd>↓</kbd> to move · <kbd>Enter</kbd> to open · <kbd>Esc</kbd> to close
+          </>
         </div>
       </div>
     </div>

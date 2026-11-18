@@ -2,7 +2,6 @@ import { openLogin } from '../services/google'
 import { getSettings, updateSettings } from '../services/settings'
 import { MIN_BRIDGE_VERSION, isBridgeUrl } from '../google/bridge'
 import { runSelfTest, lastSelfTest } from '../google/health'
-import { bridgeExtras } from '../google/hub'
 import { randomBytes } from 'node:crypto'
 import bridgeScript from '../../../google-bridge/Code.gs?raw'
 import bridgeManifest from '../../../google-bridge/appsscript.json?raw'
@@ -16,6 +15,7 @@ export function connectionFor(ctx: Ctx): Connection {
   const t = lastSelfTest(ctx.db)
   return connectionState({
     apiActive: ctx.google.active(),
+    apiRevoked: !!api.needsReauth,
     apiEmail: api.email,
     bridgeUrl: getSettings().google.bridgeUrl,
     hasToken: !!ctx.secrets.get('bridge.token'),
@@ -35,7 +35,6 @@ export function googleHandlers(
 ): Pick<
   Handlers,
   | 'google:api-status'
-  | 'google:api-configure'
   | 'google:health'
   | 'google:bridge-status'
   | 'google:bridge-configure'
@@ -43,6 +42,7 @@ export function googleHandlers(
   | 'google:bridge-verify'
   | 'google:repair'
   | 'google:api-connect'
+  | 'google:api-cancel'
   | 'google:api-disconnect'
   | 'google:open-login'
   | 'google:connection'
@@ -76,10 +76,7 @@ export function googleHandlers(
     if (r.sections.some((x) => x.ok) || (repair && !r.code)) {
       void ctx.calendar.sync()
       void ctx.gmail.sync(true)
-      void bridgeExtras(ctx.bridge, ctx.db, ctx.getVault(), {
-        meetNotes: getSettings().google.meetNotes,
-        chat: true
-      })
+      void ctx.hub.extras(ctx.getVault())
     }
     return {
       ok: !r.code,
@@ -93,14 +90,6 @@ export function googleHandlers(
 
   return {
     'google:api-status': () => ctx.google.status(),
-    'google:api-configure': ({ clientId, clientSecret }) => {
-      updateSettings({ google: { clientId: clientId.trim() } })
-      if (clientSecret !== undefined) {
-        if (clientSecret.trim()) ctx.secrets.set('google.clientSecret', clientSecret)
-        else ctx.secrets.delete('google.clientSecret')
-      }
-      return ctx.google.status()
-    },
     'google:health': () => {
       const api = ctx.google.active()
       const source = api
@@ -249,9 +238,13 @@ export function googleHandlers(
     'google:api-connect': async () => {
       const st = await ctx.google.connect()
       updateSettings({ google: { method: 'oauth' } })
-      void ctx.calendar.sync().then(() => ctx.google.extras(ctx.getVault()))
+      void ctx.calendar.sync().then(() => ctx.hub.extras(ctx.getVault()))
       void ctx.gmail.sync(true)
       return st
+    },
+    'google:api-cancel': () => {
+      ctx.google.cancelConnect()
+      return null
     },
     'google:api-disconnect': () => {
       const st = ctx.google.disconnect()
@@ -287,7 +280,7 @@ export function googleHandlers(
         void ctx.google
           .connect()
           .then(() => {
-            void ctx.calendar.sync().then(() => ctx.google.extras(ctx.getVault()))
+            void ctx.calendar.sync().then(() => ctx.hub.extras(ctx.getVault()))
             void ctx.gmail.sync(true)
           })
           .catch(() => undefined)

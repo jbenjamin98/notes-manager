@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import { openDb } from '../db'
 import { LlmRouter, LlmUnavailable, type LlmConfig, type ProviderId } from './router'
-import { PROVIDER_IDS } from './providers'
+import { PROVIDER_IDS, parseDurationMs, parseLimits, parseRetryAfter } from './providers'
 
 interface Step {
   status?: number
@@ -452,5 +452,107 @@ describe('LlmRouter against fake provider servers', () => {
     })
     expect(fake.seen.gemini).toHaveLength(4)
     expect(fake.seen.gemini[3].path).toBe('/gemini/models/gemini-3.5-flash-lite:generateContent')
+  })
+
+  describe('rate-limit and usage tracking', () => {
+    it('reads Retry-After as seconds or an HTTP date, and OpenAI-style durations', () => {
+      expect(parseRetryAfter('30')).toBe(30)
+      const now = Date.parse('2026-11-18T10:00:00Z')
+      expect(parseRetryAfter('Wed, 18 Nov 2026 10:01:30 GMT', now)).toBe(90)
+      expect(parseRetryAfter(null)).toBeNull()
+      expect(parseDurationMs('6m0s')).toBe(360_000)
+      expect(parseDurationMs('1.5s')).toBe(1500)
+      expect(parseDurationMs('250ms')).toBe(250)
+      expect(parseDurationMs('1h2m')).toBe(3_720_000)
+    })
+
+    it('captures when each allowance refills, for both header styles', () => {
+      const now = 1_000_000
+      const oa = parseLimits(
+        new Headers({
+          'x-ratelimit-remaining-requests': '3',
+          'x-ratelimit-limit-requests': '30',
+          'x-ratelimit-reset-requests': '2s',
+          'x-ratelimit-reset-tokens': '1m'
+        }),
+        'openai',
+        now
+      )
+      expect(oa).toMatchObject({
+        remainingRequests: 3,
+        limitRequests: 30,
+        resetRequestsAt: now + 2000,
+        resetTokensAt: now + 60_000
+      })
+      const an = parseLimits(
+        new Headers({
+          'anthropic-ratelimit-tokens-remaining': '100',
+          'anthropic-ratelimit-tokens-reset': '2026-11-18T10:00:00Z'
+        }),
+        'anthropic',
+        now
+      )
+      expect(an).toMatchObject({
+        remainingTokens: 100,
+        resetTokensAt: Date.parse('2026-11-18T10:00:00Z')
+      })
+    })
+
+    it('treats an overloaded 529 like a rate limit: cools down, logs why, and keeps the 429 headers', async () => {
+      const { fake, db, router } = await setup()
+      fake.script.gemini.push({
+        status: 529,
+        headers: {
+          'retry-after': '20',
+          'x-ratelimit-remaining-requests': '0',
+          'x-ratelimit-limit-requests': '10'
+        }
+      })
+      fake.script.groq.push({ text: ok('groq') })
+      const r = await router.generateJson({ ...req, feature: 'insights' })
+      expect(r.provider).toBe('groq')
+      const gem = router.status().providers.find((p) => p.id === 'gemini')!
+      expect(gem.state).toBe('cooldown')
+      expect(gem.limits).toMatchObject({ remainingRequests: 0, limitRequests: 10 })
+      expect(router.recentEvents()[0]).toMatchObject({
+        provider: 'gemini',
+        status: 529,
+        retryAfterSec: 20,
+        feature: 'insights'
+      })
+      expect(db.prepare('SELECT count(*) AS c FROM llm_events').get()).toEqual({ c: 1 })
+    })
+
+    it('counts answers reused from the cache, and they cost no tokens', async () => {
+      const { fake, db, router } = await setup()
+      fake.script.gemini.push({ text: ok('once') })
+      const cached = { ...req, cacheKey: 'same-question' }
+      await router.generateJson(cached)
+      expect(router.cacheHitsToday()).toBe(0)
+      const again = await router.generateJson(cached)
+      expect(again.cached).toBe(true)
+      await router.generateJson(cached)
+      expect(router.cacheHitsToday()).toBe(2)
+      expect(fake.seen.gemini).toHaveLength(1)
+      expect(db.prepare('SELECT count(*) AS c FROM llm_usage').get()).toEqual({ c: 1 })
+    })
+
+    it('folds calls older than a few days into a daily history instead of deleting them', async () => {
+      const { fake, db, router, clock } = await setup()
+      fake.script.gemini.push({ text: ok('old') })
+      clock.t -= 5 * 86_400_000
+      await router.generateJson({ ...req, feature: 'ask' })
+      clock.t += 5 * 86_400_000
+      fake.script.gemini.push({ text: ok('new') })
+      clock.t += 2 * 3_600_000 // past the hourly rollup gate
+      await router.generateJson({ ...req, feature: 'capture' })
+      const raw = db.prepare('SELECT count(*) AS c FROM llm_usage').get() as { c: number }
+      expect(raw.c).toBe(1)
+      const daily = db.prepare('SELECT feature, calls, tokens_in FROM llm_usage_daily').all()
+      expect(daily).toEqual([{ feature: 'ask', calls: 1, tokens_in: 11 }])
+      const days = router.history(7)
+      expect(days).toHaveLength(7)
+      expect(days.reduce((n, d) => n + d.calls, 0)).toBe(2)
+    })
   })
 })

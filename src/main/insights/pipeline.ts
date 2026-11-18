@@ -14,6 +14,15 @@ export interface PipelineDeps {
   llm: JsonGenerator | null
   me: () => string[]
   now?: () => Date
+  /**
+   * False when the AI has little room left (nearly out of budget, rate-limited): reading is then
+   * postponed, not downgraded, so a source gets the model's answer later instead of rules only.
+   */
+  headroom?: () => boolean
+  /** How many model reads this run may still start (spreads a big backlog over several runs). */
+  modelRuns?: { left: number }
+  /** Filled in by the pipeline: sources postponed this run. */
+  stats?: { deferred: number }
 }
 
 const sha = (s: string): string => createHash('sha1').update(s).digest('hex')
@@ -46,6 +55,12 @@ export async function readSource(
   let found = rules
   const gated = gateForModel(us, ctx)
   if (deps.llm && gated.length > 40) {
+    // Wait rather than settle for rules only: nothing is saved or marked read, so it is retried.
+    if ((deps.headroom && !deps.headroom()) || (deps.modelRuns && deps.modelRuns.left <= 0)) {
+      if (deps.stats) deps.stats.deferred++
+      return []
+    }
+    if (deps.modelRuns) deps.modelRuns.left--
     try {
       const viaModel = await extractWithModel(deps.llm, gated, ctx, hash)
       found = mergeCandidates(viaModel, rules)

@@ -12,7 +12,7 @@ import { gmailTimeTitle } from './api'
  * Google session (cookies) as a plain HTTPS request: no window, nothing rendered, no screen-reading.
  * Every response is validated; anything unexpected becomes a typed BridgeError with a plain remedy.
  */
-export const MIN_BRIDGE_VERSION = 5
+export const MIN_BRIDGE_VERSION = 8
 export const CONTRACT = 1
 
 /**

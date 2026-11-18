@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ConfirmButton from './ConfirmButton'
 import type { TagHooks, TagSettings } from '../editor/autotag'
 import { openInsightSource } from '../openSource'
 import type { NoteEntity, NoteSummary, TaskRow, VocabEntry } from '@shared/contract'
@@ -99,7 +100,6 @@ export default function NoteView({
   /** Delete this note (to the Recycle Bin). */
   onDelete?: () => void
 }): React.JSX.Element {
-  const [confirmDelete, setConfirmDelete] = useState(false)
   const [initial, setInitial] = useState<string | null>(null)
   // Rich text shows the finished page (still editable); Markdown shows the raw syntax. Remembered.
   const [mode, setModeState] = useState<EditorMode>(() => {
@@ -436,22 +436,21 @@ export default function NoteView({
                 aria-selected={mode === k}
                 onClick={() => setMode(k)}
                 title={`${tip} (Ctrl+Shift+M)`}
-                className={`relative z-10 rounded-full py-1 transition-colors ${mode === k ? 'text-white' : 'text-muted hover:text-fg'}`}
+                className={`relative z-10 rounded-full py-1 transition-colors ${mode === k ? 'text-accent-fg' : 'text-muted hover:text-fg'}`}
               >
                 {label}
               </button>
             ))}
           </div>
           {onDelete && (
-            <button
-              data-testid="note-delete"
-              onClick={() => (confirmDelete ? onDelete() : setConfirmDelete(true))}
-              onBlur={() => setConfirmDelete(false)}
+            <ConfirmButton
+              testId="note-delete"
+              label="Delete"
+              confirmLabel="Click again to delete"
+              onConfirm={onDelete}
               title="Move this note to the Recycle Bin"
-              className={`rounded-md px-2 py-0.5 font-medium ${confirmDelete ? 'bg-danger/15 text-danger' : 'hover:text-danger'}`}
-            >
-              {confirmDelete ? 'Click again to delete' : 'Delete'}
-            </button>
+              className="rounded-md px-2 py-0.5 font-medium hover:text-danger"
+            />
           )}
           <span
             className={`w-14 text-right ${saveState === 'error' ? 'text-danger' : ''}`}

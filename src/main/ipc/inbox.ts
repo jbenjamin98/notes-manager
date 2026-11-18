@@ -58,7 +58,7 @@ export function inboxHandlers(
     'inbox:list': () => listInsights(ctx.db, 'new').map((i) => toItem(i, getSettings().meAliases)),
     'inbox:accept': ({ id, ...edits }) =>
       acceptInsight(ctx.db, vault(), id, new Date(), edits, getSettings().meAliases),
-    'inbox:dismiss': ({ id }) => {
+    'inbox:dismiss': ({ id, undo }) => {
       // Dismissing something that came from an email is a small vote against that sender.
       const row = getInsight(ctx.db, id)
       const thread =
@@ -67,9 +67,9 @@ export function inboxHandlers(
         const t = ctx.db
           .prepare('SELECT sender_email AS e FROM email_threads WHERE id = ?')
           .get(thread) as { e: string | null } | undefined
-        if (t?.e) adjustSender(ctx.db, t.e, -1)
+        if (t?.e) adjustSender(ctx.db, t.e, undo ? 1 : -1)
       }
-      setInsightStatus(ctx.db, id, 'dismissed')
+      setInsightStatus(ctx.db, id, undo ? 'new' : 'dismissed')
       return null
     },
     'inbox:open-source': async ({ id }) => {

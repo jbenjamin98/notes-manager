@@ -28,6 +28,7 @@ export default function ActionCenter({
 }): React.JSX.Element {
   const [feed, setFeed] = useState<Feed | null>(null)
   const [connected, setConnected] = useState(true)
+  const [checking, setChecking] = useState(false)
   const [tab, setTab] = useNavState<ActionBucket>('dash.tab', 'needs-you')
   const now = useNow()
 
@@ -61,12 +62,21 @@ export default function ActionCenter({
       <header className="flex items-center gap-2 px-1 pb-2">
         <span className="flex-1" />
         <button
-          aria-label="Refresh"
-          title="Refresh"
-          className="rounded-md px-1.5 py-0.5 text-xs text-muted hover:bg-hover hover:text-fg"
-          onClick={load}
+          title="Look through your latest meetings, mail and chat for new actions and decisions"
+          disabled={checking}
+          className="rounded-md px-2 py-0.5 text-xs text-muted hover:bg-hover hover:text-fg disabled:opacity-60"
+          onClick={() => {
+            setChecking(true)
+            void window.api
+              .invoke('inbox:refresh')
+              .catch(() => undefined)
+              .finally(() => {
+                setChecking(false)
+                load()
+              })
+          }}
         >
-          ↻
+          {checking ? 'Checking…' : 'Check now'}
         </button>
       </header>
       <div

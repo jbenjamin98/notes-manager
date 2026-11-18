@@ -12,7 +12,7 @@
  * Execute as: Me, Who has access: Only myself. Note Manager walks you through it.
  */
 
-var BRIDGE_VERSION = 7
+var BRIDGE_VERSION = 8
 var CONTRACT = 1
 // Replaced by Note Manager when you press "Copy script". Requests without it are refused.
 var TOKEN = '__NOTE_MANAGER_TOKEN__'
@@ -421,12 +421,15 @@ function mail(env, p) {
     })
     if (!msgs.length) return
     var last = msgs[msgs.length - 1]
-    var seen = {}
+    // Oldest to newest, each sender at their most recent message, so the last entry wrote the
+    // last message (the app and the API path both rely on this order).
     var senders = []
     msgs.forEach(function (m) {
       var a = parseAddress(header(m, 'From'))
-      if (a.email && !seen[a.email]) {
-        seen[a.email] = true
+      if (a.email) {
+        senders = senders.filter(function (s) {
+          return s.email !== a.email
+        })
         senders.push({ name: a.email === self ? 'me' : a.name, email: a.email })
       }
     })
@@ -444,7 +447,7 @@ function mail(env, p) {
     rows.push({
       legacyId: t.id,
       threadId: null,
-      senders: senders.reverse(),
+      senders: senders,
       subject: header(msgs[0], 'Subject') || header(last, 'Subject'),
       snippet: last.snippet || '',
       lastMs: Number(last.internalDate || env.now().getTime()),

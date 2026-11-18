@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import ConfirmButton from './ConfirmButton'
 import type { InsightItem } from '@shared/contract'
 import SourceChip from './SourceChip'
 import { SparkleIcon } from './Icons'
@@ -51,7 +52,6 @@ export default function EntityView({
   onReview?: () => void
 }): React.JSX.Element {
   const [d, setD] = useState<Dossier | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [known, setKnown] = useState<InsightItem[]>([])
   const today = todayIso()
@@ -129,15 +129,14 @@ export default function EntityView({
             </button>
           )}
           {onDelete && (
-            <button
-              data-testid="entity-delete"
-              onClick={() => (confirmDelete ? onDelete(d) : setConfirmDelete(true))}
-              onBlur={() => setConfirmDelete(false)}
+            <ConfirmButton
+              testId="entity-delete"
+              label="Delete"
+              confirmLabel="Click again to delete"
+              onConfirm={() => onDelete(d)}
               title="Stop listing and tagging this name. Your notes are not changed."
-              className={`shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm font-medium ${confirmDelete ? 'bg-danger/15 text-danger' : 'bg-field text-danger hover:bg-danger/10'}`}
-            >
-              {confirmDelete ? 'Click again to delete' : 'Delete'}
-            </button>
+              className="shrink-0 rounded-lg border border-line bg-field px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
+            />
           )}
           {d.category === 'person' && onReview && (
             <button

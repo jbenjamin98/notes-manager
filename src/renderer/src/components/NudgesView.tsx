@@ -60,7 +60,7 @@ export default function NudgesView({
       <div className="mx-auto max-w-2xl px-6 py-6">
         <header className="mb-4 flex items-end gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Nudges</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Reminders</h1>
             <p className="mt-1 text-xs text-muted">
               Reminders worked out on this computer from your calendar, notes, tasks and mail.
             </p>

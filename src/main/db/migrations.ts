@@ -427,5 +427,32 @@ CREATE TABLE sender_weights (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
+  },
+  {
+    version: 14,
+    name: 'llm-usage-history',
+    sql: `
+-- Raw per-call rows are kept 3 days; older ones are folded into one row per day, provider and purpose.
+CREATE TABLE llm_usage_daily (
+  day TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  feature TEXT NOT NULL,
+  calls INTEGER NOT NULL DEFAULT 0,
+  fails INTEGER NOT NULL DEFAULT 0,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, provider, feature)
+);
+-- Why a provider was held back (rate limit, overload), newest last; trimmed to a few hundred rows.
+CREATE TABLE llm_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  retry_after_sec INTEGER,
+  feature TEXT
+);
+CREATE INDEX idx_llm_usage_feature_ts ON llm_usage(feature, ts);
+`
   }
 ]

@@ -56,6 +56,12 @@ describe('Google connection state (one answer for every screen)', () => {
     ).toBe('busy')
   })
 
+  it('an expired OAuth sign-in asks to sign in again, not "not set up"', () => {
+    expect(
+      connectionState({ ...base, bridgeUrl: '', apiRevoked: true, apiActive: false })
+    ).toMatchObject({ source: 'api', state: 'needs-login', action: 'sign-in' })
+  })
+
   it('OAuth wins over the script', () => {
     expect(connectionState({ ...base, apiActive: true, apiEmail: 'a@b.com' })).toMatchObject({
       source: 'api',

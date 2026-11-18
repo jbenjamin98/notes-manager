@@ -44,6 +44,13 @@ export function navReset(prefix: string): void {
   if (changed) bump()
 }
 
+/** Set a remembered value from outside a component (e.g. open a page on a particular tab). */
+export function navSet(key: string, value: unknown): void {
+  if (store.has(key) && store.get(key) === value) return
+  store.set(key, value)
+  bump()
+}
+
 /** Like useState, but remembered across the page being rebuilt and recorded for Back. */
 export function useNavState<T>(key: string, initial: T): [T, (next: T) => void] {
   const value = useSyncExternalStore(subscribeNav, () =>

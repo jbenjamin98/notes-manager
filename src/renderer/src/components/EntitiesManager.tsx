@@ -4,8 +4,7 @@ import { useNavState } from '../nav'
 import { SparkleIcon } from './Icons'
 import type { EntitySuggestion, Output } from '@shared/contract'
 import { shortDate } from '../format'
-import { useFocusTrap } from '../useFocusTrap'
-import { useRef } from 'react'
+import Modal from './Modal'
 
 type Row = Output<'entities:manage-list'>[number]
 type RegCat = 'person' | 'customer' | 'project' | 'system' | 'place'
@@ -40,8 +39,6 @@ function MergeDialog({
   onClose: () => void
   onDone: (canonical: string, others: string[]) => Promise<void>
 }): React.JSX.Element {
-  const dialog = useRef<HTMLDivElement>(null)
-  useFocusTrap(dialog, onClose)
   const [canonical, setCanonical] = useState(
     rows.slice().sort((a, b) => b.notes - a.notes || b.name.length - a.name.length)[0].name
   )
@@ -54,65 +51,53 @@ function MergeDialog({
   ]
   const [busy, setBusy] = useState(false)
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4"
-      onMouseDown={onClose}
-    >
-      <div
-        ref={dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Merge"
-        className="glass spring-in w-[30rem] max-w-full rounded-3xl p-6"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-lg font-semibold">Merge {rows.length} into one</h2>
-        <p className="mt-1 text-sm text-muted">
-          Pick the name to keep. The others become nicknames, so every note that used them counts
-          for it.
-        </p>
-        <div className="mt-4 space-y-2" role="radiogroup" aria-label="Name to keep">
-          {rows.map((r) => (
-            <label
-              key={r.id}
-              className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 ${r.name === canonical ? 'border-[var(--accent)] bg-accent-soft' : 'border-line'}`}
-            >
-              <input
-                type="radio"
-                name="canon"
-                checked={r.name === canonical}
-                onChange={() => setCanonical(r.name)}
-                className="accent-[var(--accent)]"
-              />
-              <span className="flex-1">{r.name}</span>
-              <span className="text-xs text-muted">{r.notes} notes</span>
-            </label>
-          ))}
-        </div>
-        <p className="mt-4 text-xs text-muted">
-          <strong className="text-fg">{canonical}</strong> will also be known as:{' '}
-          {aliases.length ? aliases.join(', ') : 'nothing else'}.
-        </p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button className={btn} onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className={primary}
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true)
-              await onDone(
-                canonical,
-                others.map((o) => o.name)
-              )
-            }}
+    <Modal label="Merge" onClose={onClose} className="w-[30rem] p-6">
+      <h2 className="text-lg font-semibold">Merge {rows.length} into one</h2>
+      <p className="mt-1 text-sm text-muted">
+        Pick the name to keep. The others become nicknames, so every note that used them counts for
+        it.
+      </p>
+      <div className="mt-4 space-y-2" role="radiogroup" aria-label="Name to keep">
+        {rows.map((r) => (
+          <label
+            key={r.id}
+            className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 ${r.name === canonical ? 'border-[var(--accent)] bg-accent-soft' : 'border-line'}`}
           >
-            Merge
-          </button>
-        </div>
+            <input
+              type="radio"
+              name="canon"
+              checked={r.name === canonical}
+              onChange={() => setCanonical(r.name)}
+              className="accent-[var(--accent)]"
+            />
+            <span className="flex-1">{r.name}</span>
+            <span className="text-xs text-muted">{r.notes} notes</span>
+          </label>
+        ))}
       </div>
-    </div>
+      <p className="mt-4 text-xs text-muted">
+        <strong className="text-fg">{canonical}</strong> will also be known as:{' '}
+        {aliases.length ? aliases.join(', ') : 'nothing else'}.
+      </p>
+      <div className="mt-5 flex justify-end gap-2">
+        <button className={btn} onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className={primary}
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            await onDone(
+              canonical,
+              others.map((o) => o.name)
+            )
+          }}
+        >
+          Merge
+        </button>
+      </div>
+    </Modal>
   )
 }
 

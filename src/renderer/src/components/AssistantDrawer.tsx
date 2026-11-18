@@ -6,6 +6,8 @@ import AiModeSwitch from './AiModeSwitch'
 import PersonaAvatar from './PersonaAvatar'
 import { usePersona } from '../aiMode'
 import { PERSONAS } from '@shared/personas'
+import { aiHealth } from '@shared/aiHealth'
+import { useLlmStatus, useNow } from '../hooks'
 import { initialMood, stepMood, type Mood, type MoodEvent } from '@shared/avatarMood'
 
 export type ActionReq = Input<'assistant:action'>
@@ -341,6 +343,7 @@ export default function AssistantDrawer({
   // Quick (free) answers remember their request so "Polish With AI" can redo them with a model.
   const [polish, setPolish] = useState<Record<string, { req: ActionReq; label: string }>>({})
   const [tokens, setTokens] = useState(0)
+  const health = aiHealth(useLlmStatus(), useNow(15_000))
   const end = useRef<HTMLDivElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   // The view never chases new text. It moves once, by itself, in two cases only: to the bottom when
@@ -576,10 +579,20 @@ export default function AssistantDrawer({
         </h2>
       </header>
 
-      {tokens > 0 && (
-        <p className="border-b border-line px-3 py-1 text-xs text-muted">
-          About {tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens used today
+      {!health.hidden && health.tone !== 'ok' ? (
+        <p
+          role="status"
+          data-testid="ai-banner"
+          className={`border-b border-line px-3 py-1.5 text-xs ${health.tone === 'bad' ? 'bg-danger/10 text-danger' : 'bg-warn/10 text-warn'}`}
+        >
+          {health.detail}
         </p>
+      ) : (
+        tokens > 0 && (
+          <p className="border-b border-line px-3 py-1 text-xs text-muted">
+            About {tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens used today
+          </p>
+        )
       )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">

@@ -579,6 +579,9 @@ const LlmProviderStatus = z.object({
       limitRequests: z.number().nullable(),
       remainingTokens: z.number().nullable(),
       limitTokens: z.number().nullable(),
+      /** When each allowance refills (ms since epoch), if the provider says. */
+      resetRequestsAt: z.number().nullable().optional(),
+      resetTokensAt: z.number().nullable().optional(),
       seenAt: z.number()
     })
     .nullable()
@@ -588,6 +591,24 @@ export const LlmStatus = z.object({
   budget: z.object({ used: z.number(), limit: z.number() }),
   /** Tokens spent today by purpose. */
   usage: z.array(z.object({ feature: z.string(), tokens: z.number() })).default([]),
+  /** Answers reused from the cache today (no tokens spent). */
+  cacheHits: z.number().default(0),
+  /** Calls and tokens per day, last 7 days, oldest first. */
+  history: z
+    .array(z.object({ day: z.string(), calls: z.number(), fails: z.number(), tokens: z.number() }))
+    .default([]),
+  /** Recent rate-limit and overload events, newest first. */
+  events: z
+    .array(
+      z.object({
+        ts: z.number(),
+        provider: ProviderIdSchema,
+        status: z.number(),
+        retryAfterSec: z.number().nullable(),
+        feature: z.string().nullable()
+      })
+    )
+    .default([]),
   canStoreKeys: z.boolean(),
   providers: z.array(LlmProviderStatus)
 })
@@ -1221,7 +1242,10 @@ export const contract = {
     input: z.object({ name: z.string().min(1), handler: LabelHandler }),
     output: z.null()
   },
-  'gmail:dismiss': { input: z.object({ id: z.string() }), output: z.null() },
+  'gmail:dismiss': {
+    input: z.object({ id: z.string(), undo: z.boolean().optional() }),
+    output: z.null()
+  },
   'gmail:add-task': {
     input: z.object({ id: z.string(), text: z.string().max(300).optional() }),
     output: z.object({ description: z.string() })
@@ -1238,13 +1262,6 @@ export const contract = {
   'gmail:guess-email': { input: z.object({ name: z.string() }), output: z.string().nullable() },
   'google:open-login': { input: z.void(), output: z.null() },
   'google:api-status': { input: z.void(), output: GoogleStatus },
-  'google:api-configure': {
-    input: z.object({
-      clientId: z.string().max(300),
-      clientSecret: z.string().max(300).optional()
-    }),
-    output: GoogleStatus
-  },
   'google:bridge-status': { input: z.void(), output: BridgeStatus },
   'google:bridge-configure': {
     input: z.object({ url: z.string().max(600) }),
@@ -1276,7 +1293,10 @@ export const contract = {
     }),
     output: z.object({ kind: z.enum(['task', 'note', 'waiting']), path: z.string() })
   },
-  'inbox:dismiss': { input: z.object({ id: z.string() }), output: z.null() },
+  'inbox:dismiss': {
+    input: z.object({ id: z.string(), undo: z.boolean().optional() }),
+    output: z.null()
+  },
   'inbox:open-source': {
     input: z.object({ id: z.string() }),
     output: z.object({ path: z.string().nullable() })
@@ -1293,6 +1313,7 @@ export const contract = {
     output: z.null()
   },
   'google:api-connect': { input: z.void(), output: GoogleStatus },
+  'google:api-cancel': { input: z.void(), output: z.null() },
   'google:api-disconnect': { input: z.void(), output: GoogleStatus },
   'app:set-theme': { input: z.object({ mode: ThemeMode }), output: z.null() },
   'assistant:send': {
@@ -1402,6 +1423,8 @@ export const events = {
   'nudges:focus': z.object({ id: z.string().nullable() }),
   'assistant:changed': z.object({ unread: z.number() }),
   'assistant:focus': z.null(),
+  /** AI usage or a provider's state changed (refresh the AI status). */
+  'llm:changed': z.null(),
   'capture:shown': z.null(),
   'google:changed': GoogleConnection,
   /** What the assistant is doing right now ("Checking your calendar…"). */
