@@ -4,6 +4,8 @@ import type { MailBody } from '../google/mailBody'
 import { eventsForDay } from '../calendar/sync'
 import { loadDetail } from '../calendar/detail'
 import { isPersonThread } from '../gmail/relevance'
+import { worthwhileThreadIds } from '../gmail/sync'
+import { mailExtra } from '../gmail/extra'
 import { insightsFor, listInsights } from '../insights/store'
 import { triage, topicMatcher } from '../chat/triage'
 import { listWaiting } from '../waiting/waiting'
@@ -358,8 +360,11 @@ export const TOOLS: ToolSpec[] = [
              FROM email_threads ORDER BY last_message_at DESC LIMIT 400`
         )
         .all() as unknown as R[]
-      let pick = rows.filter((r) =>
-        isPersonThread({ senderEmail: r.email, senderName: r.name, subject: r.subject })
+      const worthy = worthwhileThreadIds(d.db, {}, mailExtra(d.vault(), { meAliases: d.me }))
+      let pick = rows.filter(
+        (r) =>
+          worthy.has(r.id) &&
+          isPersonThread({ senderEmail: r.email, senderName: r.name, subject: r.subject })
       )
       if (a.needs_reply === true) pick = pick.filter((r) => r.inbox && !r.lastMe)
       if (q.length)

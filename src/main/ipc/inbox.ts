@@ -3,7 +3,9 @@ import { type Output } from '../../shared/contract'
 import { openThread } from '../services/google'
 import { type Vault } from '../vault/vault'
 import { acceptInsight, sourceTarget } from '../insights/accept'
+import { adjustSender } from '../gmail/importance'
 import {
+  getInsight,
   insightsFor,
   listInsights,
   setStatus as setInsightStatus,
@@ -57,6 +59,16 @@ export function inboxHandlers(
     'inbox:accept': ({ id, ...edits }) =>
       acceptInsight(ctx.db, vault(), id, new Date(), edits, getSettings().meAliases),
     'inbox:dismiss': ({ id }) => {
+      // Dismissing something that came from an email is a small vote against that sender.
+      const row = getInsight(ctx.db, id)
+      const thread =
+        row?.sourceType === 'email' ? (row.sourceRef as { threadId?: string }).threadId : null
+      if (thread) {
+        const t = ctx.db
+          .prepare('SELECT sender_email AS e FROM email_threads WHERE id = ?')
+          .get(thread) as { e: string | null } | undefined
+        if (t?.e) adjustSender(ctx.db, t.e, -1)
+      }
       setInsightStatus(ctx.db, id, 'dismissed')
       return null
     },

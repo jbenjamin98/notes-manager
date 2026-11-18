@@ -84,7 +84,8 @@ export default function NoteView({
   onOpenEntity,
   onRenamed,
   onAI,
-  onFlash
+  onFlash,
+  onDelete
 }: {
   path: string
   summary: NoteSummary | undefined
@@ -95,7 +96,10 @@ export default function NoteView({
   onRenamed: (newPath: string) => void
   onAI?: (kind: 'summarize-note' | 'extract-actions' | 'draft-followup') => void
   onFlash?: (m: string) => void
+  /** Delete this note (to the Recycle Bin). */
+  onDelete?: () => void
 }): React.JSX.Element {
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [initial, setInitial] = useState<string | null>(null)
   // Rich text shows the finished page (still editable); Markdown shows the raw syntax. Remembered.
   const [mode, setModeState] = useState<EditorMode>(() => {
@@ -147,7 +151,10 @@ export default function NoteView({
     }
     if (tv.ok && st.ok) {
       tagging.current = { entries: tv.data, settings: st.data.autoTag }
-      handle.current?.setTagging(tv.data, st.data.autoTag)
+      handle.current?.setTagging(tv.data, {
+        ...st.data.autoTag,
+        ignore: [...st.data.autoTag.ignore, ...(st.data.autoTag.hidden ?? [])]
+      })
     }
   }, [path])
 
@@ -435,6 +442,17 @@ export default function NoteView({
               </button>
             ))}
           </div>
+          {onDelete && (
+            <button
+              data-testid="note-delete"
+              onClick={() => (confirmDelete ? onDelete() : setConfirmDelete(true))}
+              onBlur={() => setConfirmDelete(false)}
+              title="Move this note to the Recycle Bin"
+              className={`rounded-md px-2 py-0.5 font-medium ${confirmDelete ? 'bg-danger/15 text-danger' : 'hover:text-danger'}`}
+            >
+              {confirmDelete ? 'Click again to delete' : 'Delete'}
+            </button>
+          )}
           <span
             className={`w-14 text-right ${saveState === 'error' ? 'text-danger' : ''}`}
             aria-live="polite"

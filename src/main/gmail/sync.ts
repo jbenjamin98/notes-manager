@@ -13,8 +13,16 @@ import {
   type DropReason,
   type KeepReason,
   type LabelHandler,
-  type RelevanceCtx
+  type RelevanceCtx,
+  type RelevanceFacts
 } from './relevance'
+import {
+  loadRepliedTo,
+  loadWeights,
+  scoreThread,
+  type Importance,
+  type ImportanceCtx
+} from './importance'
 
 export type { LabelHandler } from './relevance'
 
@@ -75,6 +83,9 @@ export interface ThreadItem {
   labels: string[]
   taskAdded: boolean
   taskText: string
+  score?: number
+  level?: 'important' | 'maybe' | 'noise'
+  reasons?: string[]
 }
 
 export interface LabelGroup {
@@ -95,6 +106,9 @@ export interface GmailOverview {
   /** Mail from people where they wrote last and it's still in your inbox (top 15). */
   awaitingMe: ThreadItem[]
   awaitingMeTotal: number
+  /** Looks unimportant (bulk, copied, old): kept out of the way. */
+  hidden: ThreadItem[]
+  hiddenTotal: number
   /** Threads where YOU wrote last and 2+ days have passed. */
   needsReply: ThreadItem[]
   starred: ThreadItem[]
@@ -163,15 +177,19 @@ export function applyThreads(db: Db, rows: ThreadRecord[], starred: ThreadRecord
   try {
     const up = db.prepare(
       `INSERT INTO email_threads (id,link_id,subject,snippet,sender_name,sender_email,last_sender_is_me,
-                                  last_message_at,unread,starred,labels_json,in_inbox,i_participated,fetched_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                                  last_message_at,unread,starred,labels_json,in_inbox,i_participated,
+                                  to_me,cc_me,bulk,important_label,msg_count,fetched_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
        ON CONFLICT(id) DO UPDATE SET link_id=COALESCE(excluded.link_id, link_id), subject=excluded.subject,
          snippet=excluded.snippet, sender_name=COALESCE(excluded.sender_name, sender_name),
          sender_email=COALESCE(excluded.sender_email, sender_email),
          last_sender_is_me=excluded.last_sender_is_me,
          last_message_at=COALESCE(excluded.last_message_at, last_message_at),
          unread=excluded.unread, starred=excluded.starred, labels_json=excluded.labels_json,
-         in_inbox=excluded.in_inbox, i_participated=excluded.i_participated, fetched_at=CURRENT_TIMESTAMP`
+         in_inbox=excluded.in_inbox, i_participated=excluded.i_participated,
+         to_me=COALESCE(excluded.to_me, to_me), cc_me=COALESCE(excluded.cc_me, cc_me),
+         bulk=COALESCE(excluded.bulk, bulk), important_label=COALESCE(excluded.important_label, important_label),
+         msg_count=COALESCE(excluded.msg_count, msg_count), fetched_at=CURRENT_TIMESTAMP`
     )
     const all = new Map<string, ThreadRecord>()
     for (const t of [...rows, ...starred])
@@ -190,7 +208,12 @@ export function applyThreads(db: Db, rows: ThreadRecord[], starred: ThreadRecord
         t.starred ? 1 : 0,
         JSON.stringify(t.labels),
         t.inInbox ? 1 : 0,
-        t.iParticipated ? 1 : 0
+        t.iParticipated ? 1 : 0,
+        t.toMe === null ? null : t.toMe ? 1 : 0,
+        t.ccMe === null ? null : t.ccMe ? 1 : 0,
+        t.bulk === null ? null : t.bulk ? 1 : 0,
+        t.importantLabel === null ? null : t.importantLabel ? 1 : 0,
+        t.msgCount
       )
     }
     if (starred.length > 0) {
@@ -246,29 +269,135 @@ interface StoredRow {
   labels: string
   inInbox: number
   iParticipated: number
+  toMe: number | null
+  ccMe: number | null
+  bulk: number | null
+  importantLabel: number | null
+  msgCount: number | null
+}
+
+/** What the importance score may also use: who you know, what you work on, your names, and how strict to be. */
+export interface OverviewExtra {
+  knownPerson?: (name: string | null, email: string | null) => boolean
+  topic?: (text: string) => boolean
+  meAliases?: string[]
+  /** 'balanced' shows important and likely-useful mail; 'strict' only the important. */
+  mode?: 'balanced' | 'strict'
+}
+
+/** A dismissed thread stays hidden until someone else writes after the dismissal. */
+const revived = (
+  r: { lastMessageAt: string | null; lastIsMe: number },
+  at: string | null
+): boolean =>
+  !!at && !r.lastIsMe && !!r.lastMessageAt && r.lastMessageAt.replace('T', ' ') > at.slice(0, 19)
+
+const importanceOf = (r: StoredRow, now: Date, ctx: ImportanceCtx): Importance =>
+  scoreThread(
+    {
+      starred: !!r.starred,
+      unread: !!r.unread,
+      iParticipated: !!r.iParticipated,
+      lastSenderIsMe: !!r.lastIsMe,
+      senderEmail: r.senderEmail,
+      senderName: r.senderName,
+      subject: r.subject,
+      snippet: r.snippet ?? '',
+      ageHours: r.lastMessageAt ? hoursBetween(r.lastMessageAt, now) : 0,
+      toMe: r.toMe === null ? null : !!r.toMe,
+      ccMe: r.ccMe === null ? null : !!r.ccMe,
+      bulk: r.bulk === null ? null : !!r.bulk,
+      importantLabel: r.importantLabel === null ? null : !!r.importantLabel,
+      msgCount: r.msgCount
+    },
+    ctx
+  )
+
+const importanceCtx = (db: Db, extra: OverviewExtra): ImportanceCtx => ({
+  weights: loadWeights(db),
+  repliedTo: loadRepliedTo(db),
+  knownPerson: extra.knownPerson,
+  topic: extra.topic,
+  meAliases: extra.meAliases
+})
+
+const labelsFromJson = (json: string): string[] =>
+  uniqueLabels(JSON.parse(json || '[]') as string[])
+
+const factsOf = (r: StoredRow): RelevanceFacts => ({
+  starred: !!r.starred,
+  labels: labelsFromJson(r.labels),
+  iParticipated: !!r.iParticipated,
+  inInbox: !!r.inInbox,
+  subject: r.subject,
+  senderEmail: r.senderEmail,
+  senderName: r.senderName
+})
+
+const STORED_SQL = `SELECT id, link_id AS linkId, subject, snippet, sender_name AS senderName, sender_email AS senderEmail,
+              last_sender_is_me AS lastIsMe, last_message_at AS lastMessageAt, unread, starred,
+              labels_json AS labels, in_inbox AS inInbox, i_participated AS iParticipated,
+              to_me AS toMe, cc_me AS ccMe, bulk, important_label AS importantLabel, msg_count AS msgCount
+         FROM email_threads ORDER BY last_message_at DESC`
+
+/**
+ * The thread ids that are worth anything to you: kept by the relevance rules, not dismissed (unless
+ * someone wrote again), and not noise by the importance score. Used wherever mail is read or listed
+ * (assistant answers, insights), so a muted, dismissed or bulk sender is never read or shown.
+ */
+export function worthwhileThreadIds(
+  db: Db,
+  handlers: Record<string, LabelHandler>,
+  extra: OverviewExtra = {},
+  now: Date = new Date()
+): Set<string> {
+  const rows = db.prepare(STORED_SQL).all() as unknown as StoredRow[]
+  const dismissedAt = new Map(
+    (
+      db
+        .prepare("SELECT thread_id AS id, at FROM email_actions WHERE action = 'dismissed'")
+        .all() as unknown as { id: string; at: string | null }[]
+    ).map((a) => [a.id, a.at])
+  )
+  const rctx = relevanceCtx(db, handlers)
+  const ictx = importanceCtx(db, extra)
+  const out = new Set<string>()
+  for (const r of rows) {
+    if (dismissedAt.has(r.id) && !revived(r, dismissedAt.get(r.id) ?? null)) continue
+    if (!classify(factsOf(r), rctx).keep) continue
+    if (importanceOf(r, now, ictx).level === 'noise' && !r.starred) continue
+    out.add(r.id)
+  }
+  return out
 }
 
 export function overview(
   db: Db,
   handlers: Record<string, LabelHandler>,
   now: Date = new Date(),
-  replyAfterHours = 48
+  replyAfterHours = 48,
+  extra: OverviewExtra = {}
 ): GmailOverview {
-  const rows = db
-    .prepare(
-      `SELECT id, link_id AS linkId, subject, snippet, sender_name AS senderName, sender_email AS senderEmail,
-              last_sender_is_me AS lastIsMe, last_message_at AS lastMessageAt, unread, starred,
-              labels_json AS labels, in_inbox AS inInbox, i_participated AS iParticipated
-         FROM email_threads ORDER BY last_message_at DESC`
-    )
-    .all() as unknown as StoredRow[]
+  const rows = db.prepare(STORED_SQL).all() as unknown as StoredRow[]
   const actions = db
-    .prepare('SELECT thread_id AS id, action FROM email_actions')
+    .prepare('SELECT thread_id AS id, action, at FROM email_actions')
     .all() as unknown as {
     id: string
     action: string
+    at: string | null
   }[]
-  const dismissed = new Set(actions.filter((a) => a.action === 'dismissed').map((a) => a.id))
+  const rowById = new Map(rows.map((r) => [r.id, r]))
+  const dismissed = new Set(
+    actions
+      .filter((a) => a.action === 'dismissed')
+      .filter((a) => {
+        const r = rowById.get(a.id)
+        return !(r && revived(r, a.at))
+      })
+      .map((a) => a.id)
+  )
+  const ictx = importanceCtx(db, extra)
+  const imp = new Map<string, Importance>()
   const taskAdded = new Set(actions.filter((a) => a.action === 'task_added').map((a) => a.id))
   const ctx = relevanceCtx(db, handlers)
 
@@ -278,18 +407,7 @@ export function overview(
   const live: StoredRow[] = []
   const reasonOf = new Map<string, KeepReason>()
   for (const r of rows) {
-    const v = classify(
-      {
-        starred: !!r.starred,
-        labels: labelsOf(r),
-        iParticipated: !!r.iParticipated,
-        inInbox: !!r.inInbox,
-        subject: r.subject,
-        senderEmail: r.senderEmail,
-        senderName: r.senderName
-      },
-      ctx
-    )
+    const v = classify(factsOf(r), ctx)
     if (!v.keep) {
       stats.dropped[v.reason] = (stats.dropped[v.reason] ?? 0) + 1
       continue
@@ -297,6 +415,7 @@ export function overview(
     stats.kept++
     stats.keptBy[v.reason] = (stats.keptBy[v.reason] ?? 0) + 1
     reasonOf.set(r.id, v.reason)
+    imp.set(r.id, importanceOf(r, now, ictx))
     if (!dismissed.has(r.id)) live.push(r)
   }
 
@@ -314,6 +433,9 @@ export function overview(
       starred: !!r.starred,
       labels,
       taskAdded: taskAdded.has(r.id),
+      score: imp.get(r.id)?.score,
+      level: imp.get(r.id)?.level,
+      reasons: imp.get(r.id)?.reasons,
       taskText: suggestTaskText({
         subject: r.subject,
         labels,
@@ -339,21 +461,32 @@ export function overview(
 
   // The mirror image: person-to-person mail still sitting in the inbox where THEY wrote last.
   // Unread first, then newest; labeled mail has its own group so it isn't repeated here.
-  const awaiting = live
-    .filter(
-      (r) =>
-        r.inInbox &&
-        !r.lastIsMe &&
-        isPersonThread(r) &&
-        labelsOf(r).length === 0 &&
-        ['inbox', 'mine'].includes(reasonOf.get(r.id) ?? '') &&
-        r.lastMessageAt &&
-        hoursBetween(r.lastMessageAt, now) <= 24 * 14
-    )
-    .sort(
-      (a, b) => b.unread - a.unread || (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? '')
-    )
+  const candidates = live.filter(
+    (r) =>
+      r.inInbox &&
+      !r.lastIsMe &&
+      isPersonThread(r) &&
+      labelsOf(r).length === 0 &&
+      ['inbox', 'mine'].includes(reasonOf.get(r.id) ?? '') &&
+      r.lastMessageAt &&
+      hoursBetween(r.lastMessageAt, now) <= 24 * 14
+  )
+  // Most important first, then unread, then newest.
+  const byImportance = (a: StoredRow, b: StoredRow): number =>
+    (imp.get(b.id)?.score ?? 0) - (imp.get(a.id)?.score ?? 0) ||
+    b.unread - a.unread ||
+    (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? '')
+  const shown = (r: StoredRow): boolean => {
+    const level = imp.get(r.id)?.level ?? 'noise'
+    return extra.mode === 'strict' ? level === 'important' : level !== 'noise'
+  }
+  // Mail that has been read and nothing marks as important is not asking for you.
+  const awaiting = candidates
+    .filter((r) => shown(r) && (r.unread || imp.get(r.id)?.level === 'important'))
+    .sort(byImportance)
+  const hiddenRows = candidates.filter((r) => !awaiting.includes(r)).sort(byImportance)
   const awaitingMe = awaiting.slice(0, 15).map((r) => toItem(r, 'reply'))
+  const hidden = hiddenRows.slice(0, 30).map((r) => toItem(r, 'reply'))
   const starred = live
     .filter((r) => r.starred)
     .slice(0, 50)
@@ -383,6 +516,8 @@ export function overview(
   return {
     awaitingMe,
     awaitingMeTotal: awaiting.length,
+    hidden,
+    hiddenTotal: hiddenRows.length,
     needsReply,
     starred,
     groups,
@@ -402,10 +537,10 @@ export function listLabels(db: Db, handlers: Record<string, LabelHandler>): Labe
 }
 
 export function recordAction(db: Db, threadId: string, action: 'dismissed' | 'task_added'): void {
-  db.prepare('INSERT OR IGNORE INTO email_actions (thread_id, action) VALUES (?,?)').run(
-    threadId,
-    action
-  )
+  db.prepare(
+    `INSERT INTO email_actions (thread_id, action, at) VALUES (?,?,datetime('now','localtime'))
+     ON CONFLICT(thread_id, action) DO UPDATE SET at = excluded.at`
+  ).run(threadId, action)
 }
 
 export function getThread(

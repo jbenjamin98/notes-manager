@@ -231,6 +231,8 @@ export interface Matcher {
   me: Set<string>
   /** lowercased names shared by several things (or marked ambiguous): never linked to one without a review */
   ambiguous: Set<string>
+  /** lowercased names you deleted: never extracted */
+  hidden?: Set<string>
 }
 
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

@@ -10,13 +10,18 @@ import { nudgeTask } from '../nudge'
 import {
   applyFilter,
   daysSince,
-  filterTitle,
   groupByCompleted,
   groupByDue,
   groupByOwner,
+  searchTasks,
+  SORT_LABEL,
+  sortTasks,
+  countFilters,
   type Group,
-  type TaskFilter
+  type TaskFilter,
+  type TaskSort
 } from '../tasks'
+import { useNavState } from '../nav'
 
 const PRIORITY_DOT: Record<string, string> = {
   High: 'bg-danger',
@@ -304,36 +309,76 @@ const EMPTY: Record<string, string> = {
   done: 'Completed tasks from the last 30 days appear here.'
 }
 
+type Priority = 'all' | 'High' | 'Medium' | 'Low'
+
+const STATUS: { f: TaskFilter; label: string }[] = [
+  { f: 'mine', label: 'Open' },
+  { f: 'today', label: 'Today' },
+  { f: 'overdue', label: 'Overdue' },
+  { f: 'waiting', label: 'Waiting' },
+  { f: 'done', label: 'Done' }
+]
+
+const selectCls =
+  'rounded-lg border border-line bg-field px-2.5 py-1.5 text-xs text-fg hover:bg-hover focus-visible:outline-none'
+
+function SearchIcon(): React.JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden className="text-muted">
+      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M13.5 13.5 17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * The task list. On the Tasks page it has the whole toolbar (status, search, sort, priority,
+ * about, account). On the dashboard (`dashboard`) it is a quiet list of open tasks with quick add.
+ */
 export default function TasksView({
   tasks,
   filter,
   onToggle,
   onOpenNote,
   onSetDue,
-  onFlash
+  onFlash,
+  onPickFilter,
+  dashboard = false,
+  onViewAll
 }: {
   tasks: TaskItem[]
   filter: TaskFilter
+  onPickFilter?: (f: TaskFilter) => void
+  /** The compact dashboard list: open tasks only, no toolbar. */
+  dashboard?: boolean
+  onViewAll?: () => void
   onToggle: (id: string, done: boolean) => void
   onOpenNote: (path: string) => void
   onSetDue: (id: string, due: string | null) => void
   onFlash: (m: string) => void
 }): React.JSX.Element {
   const today = todayIso()
+  const activeFilter: TaskFilter = dashboard ? 'mine' : filter
   // "About": only tasks that concern a kind of thing (people, companies...) or one name.
   const [about, setAbout] = useState('')
-  const base = useMemo(() => applyFilter(tasks, filter, today), [tasks, filter, today])
-  const shown = useMemo(
-    () =>
-      !about
-        ? base
-        : base.filter((t) =>
-            (t.entities ?? []).some((e) =>
-              about.startsWith('cat:') ? e.category === about.slice(4) : e.id === about.slice(4)
-            )
-          ),
-    [base, about]
-  )
+  const [prio, setPrio] = useState<Priority>('all')
+  const [query, setQuery] = useNavState('dash.query', '')
+  const [sort, setSort] = useNavState<TaskSort>('dash.sort', 'due')
+  const waitingCount = useWaiting().items.length
+  const counts = useMemo(() => countFilters(tasks, today), [tasks, today])
+  const base = useMemo(() => applyFilter(tasks, activeFilter, today), [tasks, activeFilter, today])
+  const shown = useMemo(() => {
+    if (dashboard) return base
+    let list = base
+    if (about)
+      list = list.filter((t) =>
+        (t.entities ?? []).some((e) =>
+          about.startsWith('cat:') ? e.category === about.slice(4) : e.id === about.slice(4)
+        )
+      )
+    if (prio !== 'all') list = list.filter((t) => t.priority === prio)
+    return sortTasks(searchTasks(list, query), sort)
+  }, [base, about, prio, query, sort, dashboard])
   const aboutOptions = useMemo(() => {
     const seen = new Map<string, { id: string; name: string; category: string }>()
     for (const t of base) for (const e of t.entities ?? []) seen.set(e.id, e)
@@ -342,63 +387,243 @@ export default function TasksView({
     return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   }, [base])
   const groups: Group[] = useMemo(() => {
-    if (filter === 'waiting') return groupByOwner(shown)
-    if (filter === 'done') return groupByCompleted(shown)
-    if (filter === 'overdue' || filter === 'today') return shown.length ? [['', shown]] : []
+    if (activeFilter === 'waiting') return groupByOwner(shown)
+    if (activeFilter === 'done') return groupByCompleted(shown)
+    if (activeFilter === 'overdue' || activeFilter === 'today' || (!dashboard && sort !== 'due'))
+      return shown.length ? [['', shown]] : []
     return groupByDue(shown, today)
-  }, [shown, filter, today])
+  }, [shown, activeFilter, today, sort, dashboard])
 
   const nudge = (t: TaskItem): Promise<void> => nudgeTask(t, today, onFlash)
-  const waitingCount = useWaiting().items.length
+  const account = activeFilter.startsWith('account:') ? activeFilter.slice('account:'.length) : ''
+  const filtering = !!(query || about || prio !== 'all' || account)
+  const clearAll = (): void => {
+    setQuery('')
+    setAbout('')
+    setPrio('all')
+    if (account) onPickFilter?.('mine')
+  }
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="px-6 pt-5 pb-3">
-        <h1 className="text-2xl font-semibold tracking-tight">{filterTitle(filter)}</h1>
-        <p className="mt-1 text-xs text-muted">
-          {shown.length} {filter === 'done' ? 'completed' : 'open'}
-        </p>
+    <div className="flex h-full flex-col" data-testid={dashboard ? 'tasks-compact' : 'tasks-page'}>
+      <header className="flex flex-wrap items-end gap-x-4 gap-y-1 px-6 pt-5 pb-3">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {dashboard ? 'Open Tasks' : 'Tasks'}
+        </h1>
+        {dashboard ? (
+          <>
+            <p className="pb-1 text-xs text-muted">{shown.length} open</p>
+            {onViewAll && (
+              <button
+                onClick={onViewAll}
+                className="ml-auto pb-1 text-xs font-medium text-accent hover:underline"
+              >
+                View all tasks →
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="flex flex-wrap gap-1.5 pb-1 text-xs">
+            <span className="rounded-full bg-hover px-2 py-0.5 text-muted">{counts.mine} open</span>
+            {counts.today > 0 && (
+              <span className="rounded-full bg-accent-soft px-2 py-0.5 text-accent">
+                {counts.today} due today
+              </span>
+            )}
+            {counts.overdue > 0 && (
+              <span className="rounded-full bg-danger/10 px-2 py-0.5 text-danger">
+                {counts.overdue} overdue
+              </span>
+            )}
+          </p>
+        )}
       </header>
-      {filter !== 'done' && <QuickAdd filter={filter} onFlash={onFlash} />}
-      {aboutOptions.length > 0 && (
-        <div className="flex items-center gap-2 px-6 pb-2 text-xs text-muted">
-          <label htmlFor="tasks-about">About</label>
-          <select
-            id="tasks-about"
-            data-testid="tasks-about"
-            value={about}
-            onChange={(e) => setAbout(e.target.value)}
-            className="rounded-lg border border-line bg-field px-2 py-1 text-xs text-fg"
-          >
-            <option value="">Anything</option>
-            {aboutOptions.map(([cat, list]) => (
-              <optgroup key={cat} label={ABOUT_LABEL[cat] ?? cat}>
-                <option value={`cat:${cat}`}>All {(ABOUT_LABEL[cat] ?? cat).toLowerCase()}</option>
-                {list
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((e) => (
-                    <option key={e.id} value={`ent:${e.id}`}>
-                      {e.name}
+      {activeFilter !== 'done' && <QuickAdd filter={activeFilter} onFlash={onFlash} />}
+
+      {!dashboard && onPickFilter && (
+        <div className="card-modern mx-6 mb-3 space-y-2.5 p-3" data-testid="tasks-toolbar">
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              role="group"
+              aria-label="Show"
+              className="flex rounded-full border border-line bg-field/70 p-0.5 text-xs font-semibold"
+            >
+              {STATUS.map(({ f, label }) => {
+                const on = f === 'mine' ? activeFilter === 'mine' || !!account : activeFilter === f
+                const n =
+                  f === 'mine'
+                    ? counts.mine
+                    : f === 'today'
+                      ? counts.today
+                      : f === 'overdue'
+                        ? counts.overdue
+                        : f === 'waiting'
+                          ? counts.waiting + waitingCount
+                          : 0
+                return (
+                  <button
+                    key={f}
+                    data-testid={`task-chip-${f}`}
+                    aria-pressed={on}
+                    onClick={() => onPickFilter(f)}
+                    className={`rounded-full px-3 py-1 transition-colors ${
+                      on
+                        ? 'bg-accent-soft text-accent'
+                        : f === 'overdue' && n > 0
+                          ? 'text-danger hover:bg-hover'
+                          : 'text-muted hover:text-fg'
+                    }`}
+                  >
+                    {label}
+                    {n > 0 && <span className="ml-1 tabular-nums opacity-80">{n}</span>}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="ml-auto flex min-w-48 flex-1 items-center gap-2 rounded-lg border border-line bg-field px-2.5 focus-within:border-accent sm:max-w-xs">
+              <SearchIcon />
+              <input
+                type="search"
+                data-testid="tasks-search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search tasks, notes, people…"
+                aria-label="Search tasks"
+                className="min-w-0 flex-1 bg-transparent py-1.5 text-xs text-fg placeholder:text-muted focus-visible:outline-none [&::-webkit-search-cancel-button]:hidden"
+              />
+              {query && (
+                <button
+                  aria-label="Clear search"
+                  className="text-muted hover:text-fg"
+                  onClick={() => setQuery('')}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            <label htmlFor="tasks-sort">Sort</label>
+            <select
+              id="tasks-sort"
+              data-testid="tasks-sort"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as TaskSort)}
+              className={selectCls}
+            >
+              {(Object.keys(SORT_LABEL) as TaskSort[]).map((k) => (
+                <option key={k} value={k}>
+                  {SORT_LABEL[k]}
+                </option>
+              ))}
+            </select>
+            <span className="mx-1 h-4 w-px bg-line" aria-hidden />
+            <span>Priority</span>
+            <div role="group" aria-label="Priority" className="flex gap-1">
+              {(['all', 'High', 'Medium', 'Low'] as Priority[]).map((p) => (
+                <button
+                  key={p}
+                  aria-pressed={prio === p}
+                  data-testid={`prio-${p}`}
+                  onClick={() => setPrio(p)}
+                  className={`rounded-full border px-2.5 py-0.5 font-medium ${
+                    prio === p
+                      ? 'border-transparent bg-accent-soft text-accent'
+                      : 'border-line bg-field hover:bg-hover'
+                  }`}
+                >
+                  {p === 'all' ? 'Any' : p}
+                </button>
+              ))}
+            </div>
+            {aboutOptions.length > 0 && (
+              <>
+                <span className="mx-1 h-4 w-px bg-line" aria-hidden />
+                <label htmlFor="tasks-about">About</label>
+                <select
+                  id="tasks-about"
+                  data-testid="tasks-about"
+                  value={about}
+                  onChange={(e) => setAbout(e.target.value)}
+                  className={selectCls}
+                >
+                  <option value="">Anything</option>
+                  {aboutOptions.map(([cat, list]) => (
+                    <optgroup key={cat} label={ABOUT_LABEL[cat] ?? cat}>
+                      <option value={`cat:${cat}`}>
+                        All {(ABOUT_LABEL[cat] ?? cat).toLowerCase()}
+                      </option>
+                      {list
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((e) => (
+                          <option key={e.id} value={`ent:${e.id}`}>
+                            {e.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </>
+            )}
+            {counts.accounts.length > 0 && (
+              <>
+                <span className="mx-1 h-4 w-px bg-line" aria-hidden />
+                <label htmlFor="tasks-account">Account</label>
+                <select
+                  id="tasks-account"
+                  data-testid="tasks-account"
+                  value={account}
+                  onChange={(e) =>
+                    onPickFilter(e.target.value ? `account:${e.target.value}` : 'mine')
+                  }
+                  className={selectCls}
+                >
+                  <option value="">All</option>
+                  {counts.accounts.map(([name, n]) => (
+                    <option key={name} value={name}>
+                      {name} ({n})
                     </option>
                   ))}
-              </optgroup>
-            ))}
-          </select>
+                </select>
+              </>
+            )}
+            <span className="flex-1" />
+            {filtering && (
+              <>
+                <span data-testid="tasks-count">
+                  {shown.length} of {base.length}
+                </span>
+                <button className="font-medium text-accent hover:underline" onClick={clearAll}>
+                  Clear filters
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10">
-        {filter === 'waiting' && <WaitingView onOpenNote={onOpenNote} onFlash={onFlash} />}
-        {filter === 'waiting' && groups.length > 0 && (
+        {activeFilter === 'waiting' && <WaitingView onOpenNote={onOpenNote} onFlash={onFlash} />}
+        {activeFilter === 'waiting' && groups.length > 0 && (
           <p className="px-2 pt-2 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">
             Older Assigned Lines in Your Notes
           </p>
         )}
-        {groups.length === 0 && filter === 'waiting' && waitingCount > 0 ? null : groups.length ===
-          0 ? (
-          <p className="px-4 py-10 text-center text-sm text-muted">
-            {EMPTY[filter] ?? 'No open tasks for this account.'}
-          </p>
+        {groups.length === 0 &&
+        activeFilter === 'waiting' &&
+        waitingCount > 0 ? null : groups.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-muted">
+            <p>
+              {filtering
+                ? 'No tasks match these filters.'
+                : (EMPTY[activeFilter] ?? 'No open tasks for this account.')}
+            </p>
+            {filtering && (
+              <button className="mt-2 font-medium text-accent hover:underline" onClick={clearAll}>
+                Clear filters
+              </button>
+            )}
+          </div>
         ) : (
           groups.map(([label, list]) => (
             <section
@@ -427,7 +652,7 @@ export default function TasksView({
                     key={t.id}
                     task={t}
                     today={today}
-                    waiting={filter === 'waiting'}
+                    waiting={activeFilter === 'waiting'}
                     onToggle={onToggle}
                     onOpenNote={onOpenNote}
                     onSetDue={onSetDue}

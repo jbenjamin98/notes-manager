@@ -1051,7 +1051,7 @@ try {
   await main.ev(`document.querySelector('button[aria-label=Tasks]').click()`)
   await sleep(500)
   await main.ev(
-    `[...document.querySelectorAll('button,div')].find(b=>b.textContent.trim().startsWith('My Tasks'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Tasks'))?.click()`
   )
   await sleep(900)
   check(
@@ -1061,6 +1061,155 @@ try {
     )
   )
   await main.shot('14-tasks-about.png')
+
+  // Tasks dashboard: calendar, open tasks and the Action Center with scored mail
+  await main.ev(
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Dashboard'))?.click()`
+  )
+  await sleep(600)
+  check(
+    'the Dashboard has a calendar, a compact open-task list and an Action Center',
+    await main.ev(
+      `!!document.querySelector('[data-testid=tasks-dashboard] [data-testid=panel-calendar]') && !!document.querySelector('[data-testid=tasks-compact]') && !document.querySelector('[data-testid=tasks-search]') && !!document.querySelector('[data-testid=action-center]')`
+    )
+  )
+  check(
+    'the Action Center is open by default and the calendar is folded away',
+    await main.ev(
+      `!!document.querySelector('[data-testid=action-center]') && !document.querySelector('[data-testid=mini-calendar]')`
+    )
+  )
+  await main.ev(`document.querySelector('[data-testid=panel-calendar]').click()`)
+  await sleep(400)
+  check(
+    'opening the calendar folds the Action Center, so only one is open',
+    await main.ev(
+      `!!document.querySelector('[data-testid=mini-calendar]') && !document.querySelector('[data-testid=action-center]')`
+    )
+  )
+  await main.shot('14a-dashboard-calendar.png')
+  await main.ev(`document.querySelector('[data-testid=panel-action]').click()`)
+  await sleep(400)
+  {
+    const { DatabaseSync: Dbm } = await import('node:sqlite')
+    const dm = new Dbm(join(userData, 'index.db'))
+    const nowLocal = new Date(Date.now() - 3600_000)
+      .toLocaleString('sv')
+      .slice(0, 16)
+      .replace(' ', 'T')
+    const ins = dm.prepare(
+      `INSERT OR REPLACE INTO email_threads (id, link_id, subject, snippet, sender_name, sender_email, last_sender_is_me,
+         last_message_at, unread, starred, labels_json, in_inbox, i_participated, to_me, cc_me, bulk, important_label, msg_count)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1, 0, '[]', 1, 0, ?, 0, ?, 0, 1)`
+    )
+    ins.run(
+      'e2e-imp',
+      'e2e-imp',
+      'Budget approval needed',
+      'Can you approve the budget by Friday?',
+      'Dana Cole',
+      'dana@acme.com',
+      nowLocal,
+      1,
+      0
+    )
+    ins.run(
+      'e2e-news',
+      'e2e-news',
+      'Big sale this week',
+      'Everything half price',
+      'Shop',
+      'offers@shop.example.com',
+      nowLocal,
+      0,
+      1
+    )
+    dm.close()
+  }
+  await main.ev(
+    `document.querySelector('[data-testid=action-center] button[aria-label=Refresh]').click()`
+  )
+  await sleep(900)
+  check(
+    'the Action Center lists the important email and holds back the newsletter',
+    await main.ev(
+      `(()=>{const t=document.querySelector('[data-testid=action-list]')?.innerText ?? '';return t.includes('Budget approval needed') && !t.includes('Big sale')})()`
+    )
+  )
+  await main.ev(`document.querySelector('[data-testid=ac-tab-hidden]').click()`)
+  await sleep(400)
+  check(
+    'the newsletter is under Hidden',
+    await main.ev(
+      `(document.querySelector('[data-testid=action-list]')?.innerText ?? '').includes('Big sale')`
+    )
+  )
+  await main.ev(`document.querySelector('[data-testid=ac-tab-needs-you]').click()`)
+  await sleep(300)
+  await main.ev(`document.querySelector('[data-testid=mark-not-important]').click()`)
+  await sleep(700)
+  {
+    const { DatabaseSync: Dbw } = await import('node:sqlite')
+    const dw = new Dbw(join(userData, 'index.db'))
+    const w = dw.prepare("SELECT weight FROM sender_weights WHERE key = 'dana@acme.com'").get()
+    dw.close()
+    check('Not important teaches it about the sender', w?.weight === -3, JSON.stringify(w))
+  }
+  // Marked not important, the card now sits under Hidden: block the sender from there
+  await main.ev(`document.querySelector('[data-testid=ac-tab-hidden]').click()`)
+  await sleep(400)
+  await main.ev(
+    `[...document.querySelectorAll('[data-testid=action-card]')].find(c=>c.innerText.includes('Budget approval needed')).querySelector('[data-testid=block-sender]').click()`
+  )
+  await sleep(300)
+  await main.ev(
+    `[...document.querySelectorAll('[data-testid=action-card]')].find(c=>c.innerText.includes('Budget approval needed')).querySelector('[data-testid=block-options] button').click()`
+  )
+  await sleep(800)
+  {
+    const { DatabaseSync: Dbk } = await import('node:sqlite')
+    const dk = new Dbk(join(userData, 'index.db'))
+    const m = dk.prepare("SELECT pattern FROM email_mutes WHERE pattern = 'dana@acme.com'").get()
+    dk.exec('DELETE FROM email_mutes')
+    dk.close()
+    check('Block stops a sender from showing up', !!m, JSON.stringify(m))
+  }
+  check(
+    'the blocked sender is gone from the Action Center',
+    await main.ev(
+      `!(document.querySelector('[data-testid=action-list]')?.innerText ?? '').includes('Budget approval needed')`
+    )
+  )
+  await main.ev(`document.querySelector('[data-testid=ac-tab-needs-you]').click()`)
+  await main.ev(
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Tasks'))?.click()`
+  )
+  await sleep(600)
+  check(
+    'the Tasks page has the full toolbar: status, search, sort, priority',
+    await main.ev(
+      `!!document.querySelector('[data-testid=tasks-toolbar] [data-testid=tasks-search]') && !!document.querySelector('[data-testid=tasks-sort]') && !!document.querySelector('[data-testid=prio-High]') && !!document.querySelector('[data-testid=task-chip-overdue]')`
+    )
+  )
+  await main.ev(
+    `(()=>{const i=document.querySelector('[data-testid=tasks-search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'zzzz-no-such-task');i.dispatchEvent(new Event('input',{bubbles:true}))})()`
+  )
+  await sleep(400)
+  check(
+    'searching tasks narrows the list',
+    (await main.ev(`document.querySelectorAll('[data-testid=tasks-page] li').length`)) === 0
+  )
+  await main.ev(
+    `(()=>{const i=document.querySelector('[data-testid=tasks-search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'');i.dispatchEvent(new Event('input',{bubbles:true}))})()`
+  )
+  await sleep(300)
+  await main.shot('14b-dashboard.png')
+  {
+    const { DatabaseSync: Dbc } = await import('node:sqlite')
+    const dc = new Dbc(join(userData, 'index.db'))
+    dc.exec("DELETE FROM email_threads WHERE id LIKE 'e2e-%'; DELETE FROM sender_weights;")
+    dc.close()
+  }
 
   // Meeting Series: a repeating meeting becomes one page with its sessions
   {
@@ -1084,9 +1233,11 @@ try {
     ).run(day(14) + 'T10:00:00Z', day(14) + 'T10:30:00Z', day(14))
     d2.close()
   }
-  await main.ev(
-    `[...document.querySelectorAll('button,div')].find(b=>b.textContent.trim()==='Meeting Series')?.click()`
-  )
+  await main.ev(keydown('k', true))
+  await sleep(300)
+  await main.ev(setValue('input[aria-label="Search"]', 'meeting series'))
+  await sleep(300)
+  await main.ev(`document.querySelector('[role=option]').click()`)
   await sleep(1200)
   check(
     'Meeting Series lists the repeating meeting',
@@ -1124,21 +1275,47 @@ try {
        VALUES ('11111111-2222-4333-8444-555555555555','ask','Send Priya the budget numbers','Me','2026-11-20',0.8,'chat','{"space":"dm:Priya"}','Chat · Priya · Nov 14','Can you send me the budget numbers by Friday?','2026-11-14T15:00:00Z','ask:budget-numbers-priya')`
     )
     .run()
+  sdb
+    .prepare(
+      `INSERT INTO insights (id, kind, text, owner, due, confidence, source_type, source_ref, source_label, source_snippet, source_at, dedupe_key)
+       VALUES ('99999999-2222-4333-8444-555555555555','decision','Cutover moves to Dec 4',NULL,NULL,0.8,'chat','{"space":"dm:Priya"}','Chat · Priya · Nov 14','We agreed the cutover moves to Dec 4.','2026-11-14T15:00:00Z','decision:cutover-dec-4')`
+    )
+    .run()
   sdb.close()
   await main.ev(
     `document.querySelector('button[aria-label="Tasks"], button[title="Tasks"]')?.click()`
   )
   await sleep(400)
   await main.ev(
-    `[...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Inbox'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Action Center'))?.click()`
   )
-  await sleep(1200)
+  await sleep(1500)
   check(
-    'Inbox shows what matters with a readable source',
+    'the Action Center shows what matters with a readable source',
     (await text()).includes('Send Priya the budget numbers') &&
-      (await text()).includes('Chat · Priya · Nov 14')
+      (await text()).includes('Chat · Priya · Nov 14'),
+    (await text()).slice(0, 600)
+  )
+  check(
+    'a decision is not in the Action Center',
+    !(await text()).includes('Cutover moves to Dec 4')
   )
   await main.shot('07-inbox.png')
+  await main.ev(
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Decisions'))?.click()`
+  )
+  await sleep(1000)
+  check(
+    'Decisions & Facts lists the decision to keep or mark not pertinent',
+    await main.ev(
+      `(()=>{const t=document.querySelector('[data-testid=facts-page]')?.innerText ?? '';return t.includes('Cutover moves to Dec 4') && t.includes('Not pertinent')})()`
+    )
+  )
+  await main.shot('07b-facts.png')
+  await main.ev(
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Action Center'))?.click()`
+  )
+  await sleep(1000)
   await main.ev(
     `[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Add as Task').click()`
   )
@@ -1191,7 +1368,10 @@ try {
     (await text()).includes('December 4') &&
       (await main.ev(
         `[...document.querySelectorAll('aside button')].some(b=>b.textContent.includes('NextMRO'))`
-      ))
+      )),
+    (
+      await main.ev(`[...document.querySelectorAll('aside')].map(a=>a.innerText).join(' || ')`)
+    ).slice(-1200)
   )
   await send('Send the deck to Sarah next Thursday; contact joe@example.com')
   check(
@@ -1495,7 +1675,7 @@ try {
 
   // Back goes to where you just were
   await main.ev(
-    `[...document.querySelectorAll('button')].find(b=>b.textContent.trim().startsWith('Inbox'))?.click()`
+    `[...document.querySelectorAll('[role=navigation][aria-label=Tasks] button')].find(b=>b.textContent.trim().startsWith('Action Center'))?.click()`
   )
   await sleep(700)
   await main.ev(

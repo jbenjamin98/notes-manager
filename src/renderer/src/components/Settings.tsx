@@ -612,8 +612,8 @@ export default function Settings({
                   </ul>
                 )}
                 <p className="mt-2 text-xs text-muted">
-                  <b>Counts</b> shows an unread count. <b>Tasks</b> lists those emails under Email
-                  follow-ups so you can turn them into tasks. <b>Ignore</b> hides them.
+                  <b>Counts</b> shows an unread count. <b>Tasks</b> lists those emails in the Action
+                  Center so you can turn them into tasks. <b>Ignore</b> hides them.
                 </p>
               </div>
             )}
@@ -672,11 +672,12 @@ export default function Settings({
               </p>
 
               <h3 className="mt-5 mb-1 text-xs font-semibold tracking-wide text-muted uppercase">
-                Muted Senders
+                Blocked Senders
               </h3>
               {mutes.length === 0 ? (
                 <p className="text-sm text-muted">
-                  None. Use Mute on any email to hide a sender for good.
+                  None. Use Block on any email in the Action Center to hide a sender (or a whole
+                  domain) for good.
                 </p>
               ) : (
                 <ul>

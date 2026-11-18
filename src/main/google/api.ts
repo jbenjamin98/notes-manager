@@ -265,6 +265,31 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
   return out
 }
 
+/** What the headers say about a thread: sent to me or only copied, bulk or automated, marked important. */
+export function signalsOf(
+  msgs: { labelIds?: string[]; payload?: { headers?: { name: string; value: string }[] } }[],
+  selfEmail: string | null
+): NonNullable<RawRow['signals']> {
+  const h = (m: (typeof msgs)[number], n: string): string =>
+    m.payload?.headers?.find((x) => x.name.toLowerCase() === n.toLowerCase())?.value ?? ''
+  const self = (selfEmail ?? '').toLowerCase()
+  const theirs = msgs.filter((m) => !self || !h(m, 'From').toLowerCase().includes(self))
+  const lastTheirs = theirs[theirs.length - 1]
+  const has = (s: string): boolean => !!self && s.toLowerCase().includes(self)
+  return {
+    toMe: lastTheirs ? has(h(lastTheirs, 'To')) : undefined,
+    ccMe: lastTheirs ? has(h(lastTheirs, 'Cc')) : undefined,
+    bulk: msgs.some(
+      (m) =>
+        !!h(m, 'List-Unsubscribe') ||
+        /^(bulk|list|junk)$/i.test(h(m, 'Precedence').trim()) ||
+        (!!h(m, 'Auto-Submitted') && !/^no$/i.test(h(m, 'Auto-Submitted').trim()))
+    ),
+    important: msgs.some((m) => (m.labelIds ?? []).includes('IMPORTANT')),
+    msgCount: msgs.length
+  }
+}
+
 export async function fetchGmail(
   api: GoogleApi,
   opts: { days: number; maxThreads?: number; tz?: string }
@@ -299,7 +324,16 @@ export async function fetchGmail(
       format: 'metadata',
       fields: 'id,messages(id,labelIds,snippet,internalDate,payload/headers)'
     })
-    for (const h of ['From', 'Subject']) p.append('metadataHeaders', h)
+    for (const h of [
+      'From',
+      'Subject',
+      'To',
+      'Cc',
+      'List-Unsubscribe',
+      'Precedence',
+      'Auto-Submitted'
+    ])
+      p.append('metadataHeaders', h)
     const t = await api.get<{ id: string; messages?: ApiMessage[] }>(
       `${base}/users/me/threads/${id}?${p}`
     )
@@ -331,7 +365,8 @@ export async function fetchGmail(
       timeTitle: gmailTimeTitle(Number(last.internalDate ?? Date.now()), opts.tz),
       unread: msgs.some((m) => (m.labelIds ?? []).includes('UNREAD')),
       starred: msgs.some((m) => (m.labelIds ?? []).includes('STARRED')),
-      labels: chips
+      labels: chips,
+      signals: signalsOf(msgs, selfEmail)
     }
   }
 

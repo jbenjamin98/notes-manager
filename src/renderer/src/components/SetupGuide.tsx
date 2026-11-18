@@ -402,7 +402,7 @@ export default function SetupGuide({ onFinish }: { onFinish: () => void }): Reac
                     [
                       '✅',
                       'Tasks Find Themselves',
-                      '“Remind Sarah to send the deck Friday” just works.'
+                      '“Send the budget to Sarah by Friday” becomes your task, tagged with Sarah.'
                     ],
                     ['✨', 'A Co-Pilot', 'Nudges before meetings and answers about your notes.']
                   ].map(([icon, t, d]) => (

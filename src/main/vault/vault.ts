@@ -131,7 +131,8 @@ export class Vault {
     private db: Db,
     public root: string,
     private meAliases: () => string[],
-    private onChanged: (paths: string[]) => void = () => undefined
+    private onChanged: (paths: string[]) => void = () => undefined,
+    private hiddenNames: () => string[] = () => []
   ) {}
 
   abs(rel: string): string {
@@ -215,7 +216,8 @@ export class Vault {
    * 30 s otherwise (new email senders / discovered people join the pool without a restart).
    */
   private tagging(): { matcher: Matcher; people: PersonIndex } {
-    const key = `${this.meAliases().join('|')}#${this.registryVersion}#${Math.floor(Date.now() / 30_000)}`
+    const hidden = this.hiddenNames().map((h) => h.toLowerCase())
+    const key = `${this.meAliases().join('|')}#${this.registryVersion}#${hidden.join('|')}#${Math.floor(Date.now() / 30_000)}`
     if (this.matcherCache?.key !== key) {
       const me = new Set([
         'me',
@@ -258,9 +260,11 @@ export class Vault {
       // Companies you email, from sender domains: tagged and linked even before you list them.
       for (const c of senderCompanies(this.db))
         seeds.push({ category: 'customer', name: c, terms: [c], inRegistry: false })
+      const matcher = buildMatcher(reg, this.meAliases(), seeds, this.sharedNames(reg))
+      matcher.hidden = new Set(hidden)
       this.matcherCache = {
         key,
-        matcher: buildMatcher(reg, this.meAliases(), seeds, this.sharedNames(reg)),
+        matcher,
         people: personIndex
       }
     }
@@ -755,6 +759,18 @@ export class Vault {
       patchFile(this.abs(rel), (c) => setFrontmatterField(c, 'series', value))
     )
     await this.processFile(rel)
+    this.onChanged([rel])
+  }
+
+  /** Delete a note: `trash` moves the file to the Recycle Bin (so it can be restored); the index forgets it. */
+  async deleteNote(rel: string, trash: (abs: string) => Promise<void>): Promise<void> {
+    this.assertInVault(rel)
+    if (!rel.toLowerCase().endsWith('.md') || rel === REGISTRY_REL)
+      throw new Error('That is not a note.')
+    await this.serial(rel, async () => {
+      if (existsSync(this.abs(rel))) await trash(this.abs(rel))
+    })
+    removeFromIndex(this.db, rel)
     this.onChanged([rel])
   }
 

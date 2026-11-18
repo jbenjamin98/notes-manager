@@ -5,6 +5,7 @@ interface Cfg {
   enabled: boolean
   ai: boolean
   ignore: string[]
+  hidden?: string[]
 }
 
 /** Writing the missing @ and # as you type: on or off, AI help for new things, and words never tagged. */
@@ -122,6 +123,36 @@ export default function AutoTagSettings(): React.JSX.Element {
           </button>
         </form>
       </div>
+      {(cfg.hidden ?? []).length > 0 && (
+        <div className="mt-4" data-testid="hidden-names">
+          <p className="text-sm font-medium">Deleted names</p>
+          <p className="text-xs text-muted">
+            Not listed or tagged any more. Your notes were not changed. ✕ brings one back.
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {(cfg.hidden ?? []).map((w) => (
+              <span
+                key={w}
+                className="flex items-center gap-1 rounded-full border border-line bg-field px-2.5 py-0.5 text-xs"
+              >
+                {w}
+                <button
+                  aria-label={`Bring back ${w}`}
+                  className="text-muted hover:text-fg"
+                  onClick={() => {
+                    void window.api.invoke('entities:hide', { name: w, on: false })
+                    setCfg((c) =>
+                      c ? { ...c, hidden: (c.hidden ?? []).filter((x) => x !== w) } : c
+                    )
+                  }}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <TagHealth />
     </>
   )

@@ -33,6 +33,8 @@ export const SettingsSchema = z.object({
   gmailEnabled: z.boolean().default(true),
   /** How far back the first full mail crawl reads (days). */
   gmailDays: z.number().int().min(7).max(180).default(30),
+  /** How picky to be about which mail needs you: balanced shows likely-useful mail too. */
+  gmailImportance: z.enum(['balanced', 'strict']).default('balanced'),
   /** Per Gmail label: ignore it, show counts only, or turn its mail into task suggestions. */
   gmailLabels: z.record(z.string(), z.enum(['ignore', 'info', 'tasks'])).default({}),
   /** The first-run setup guide has been finished or skipped. */
@@ -84,9 +86,11 @@ export const SettingsSchema = z.object({
       /** What you said a name is (lowercase name -> kind), remembered from corrections. */
       kinds: z.record(z.string().max(60), z.string().max(20)).default({}),
       /** Topics you accepted from Suggested Tags: tagged even before a note uses them. */
-      topics: z.array(z.string().max(60)).max(500).default([])
+      topics: z.array(z.string().max(60)).max(500).default([]),
+      /** Names you deleted (lowercase): never listed, linked or tagged again. */
+      hidden: z.array(z.string().max(60)).max(1000).default([])
     })
-    .default({ enabled: true, ai: true, ignore: [], kinds: {}, topics: [] }),
+    .default({ enabled: true, ai: true, ignore: [], kinds: {}, topics: [], hidden: [] }),
   /** Global quick-capture window (works from any app). */
   quickCapture: z
     .object({
@@ -204,13 +208,20 @@ const ThreadItem = z.object({
   starred: z.boolean(),
   labels: z.array(z.string()),
   taskAdded: z.boolean(),
-  taskText: z.string()
+  taskText: z.string(),
+  /** How much it matters (see importance.ts) and why. */
+  score: z.number().optional(),
+  level: z.enum(['important', 'maybe', 'noise']).optional(),
+  reasons: z.array(z.string()).optional()
 })
 export type ThreadItem = z.infer<typeof ThreadItem>
 
 const GmailOverview = z.object({
   awaitingMe: z.array(ThreadItem),
   awaitingMeTotal: z.number(),
+  /** Mail that looks unimportant (bulk, copied, old): kept out of the way. */
+  hidden: z.array(ThreadItem),
+  hiddenTotal: z.number(),
   needsReply: z.array(ThreadItem),
   starred: z.array(ThreadItem),
   groups: z.array(
@@ -1030,6 +1041,17 @@ export const contract = {
   },
   'notes:list': { input: z.void(), output: z.array(NoteSummary) },
   'notes:read': { input: NotePath, output: NoteContent },
+  /** Move a note to the Recycle Bin. */
+  'notes:delete': { input: NotePath, output: z.null() },
+  /** Delete a name (person, company, topic...): it is no longer listed or tagged. Notes are not changed. */
+  'entities:hide': {
+    input: z.object({
+      name: z.string().min(1).max(60),
+      category: z.string().max(20).optional(),
+      on: z.boolean()
+    }),
+    output: z.null()
+  },
   'notes:save': {
     input: z.object({ path: z.string(), content: z.string(), baseHash: z.string() }),
     output: SaveResult
@@ -1181,6 +1203,15 @@ export const contract = {
   'gmail:mutes': { input: z.void(), output: z.array(z.string()) },
   'gmail:mute': { input: z.object({ target: z.string().max(320) }), output: z.string() },
   'gmail:unmute': { input: z.object({ pattern: z.string() }), output: z.null() },
+  /** Teach it: this sender's mail is important, or not. */
+  'gmail:importance': {
+    input: z.object({ id: z.string(), verdict: z.enum(['important', 'not-important']) }),
+    output: z.object({ sender: z.string().nullable(), quieted: z.boolean() })
+  },
+  'gmail:importance-undo': {
+    input: z.object({ id: z.string(), verdict: z.enum(['important', 'not-important']) }),
+    output: z.null()
+  },
   'gmail:overview': { input: z.void(), output: GmailOverview },
   'gmail:labels': {
     input: z.void(),
@@ -1299,6 +1330,8 @@ export const contract = {
   'assistant:unread': { input: z.void(), output: z.number() },
   'assistant:mark-read': { input: z.void(), output: z.null() },
   'assistant:history': { input: z.void(), output: z.array(ChatMessage) },
+  /** Example prompts for an empty Co-Pilot, made from the user's own notes. */
+  'assistant:hints': { input: z.void(), output: z.array(z.string()) },
   'assistant:apply': {
     input: z.object({
       messageId: z.string(),

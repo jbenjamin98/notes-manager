@@ -31,6 +31,7 @@ export default function EntityView({
   id,
   onOpenNote,
   onEdit,
+  onDelete,
   onCatchUp,
   onToggle,
   onSetDue,
@@ -40,6 +41,8 @@ export default function EntityView({
   id: string
   onOpenNote: (path: string) => void
   onEdit: (d: Dossier) => void
+  /** Delete this name (not the notes that mention it). */
+  onDelete?: (d: Dossier) => void
   onCatchUp: (id: string, name: string) => void
   onToggle: (id: string, done: boolean) => void
   onSetDue: (id: string, due: string | null) => void
@@ -48,6 +51,7 @@ export default function EntityView({
   onReview?: () => void
 }): React.JSX.Element {
   const [d, setD] = useState<Dossier | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [known, setKnown] = useState<InsightItem[]>([])
   const today = todayIso()
@@ -122,6 +126,17 @@ export default function EntityView({
               className="shrink-0 rounded-lg border border-line bg-field px-3 py-1.5 text-sm font-medium hover:bg-hover"
             >
               {d.inRegistry ? 'Edit Names' : 'Add Nicknames'}
+            </button>
+          )}
+          {onDelete && (
+            <button
+              data-testid="entity-delete"
+              onClick={() => (confirmDelete ? onDelete(d) : setConfirmDelete(true))}
+              onBlur={() => setConfirmDelete(false)}
+              title="Stop listing and tagging this name. Your notes are not changed."
+              className={`shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm font-medium ${confirmDelete ? 'bg-danger/15 text-danger' : 'bg-field text-danger hover:bg-danger/10'}`}
+            >
+              {confirmDelete ? 'Click again to delete' : 'Delete'}
             </button>
           )}
           {d.category === 'person' && onReview && (

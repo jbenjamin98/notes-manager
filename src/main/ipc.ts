@@ -1,3 +1,5 @@
+import { smartOverview } from './gmail/extra'
+import { adjustSender } from './gmail/importance'
 import { app, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { reviewQueue } from './entities/review'
 import { discoverTags } from './entities/discover'
@@ -24,7 +26,6 @@ import {
   guessEmail,
   listLabels,
   listMutes,
-  overview,
   recordAction,
   removeMute
 } from './gmail/sync'
@@ -314,6 +315,23 @@ export function registerIpc(ctx: Ctx): void {
       await vault().removeRegistryEntry(category, name)
       return null
     },
+    'entities:hide': async ({ name, category, on }) => {
+      const s = getSettings().autoTag
+      const key = name.toLowerCase()
+      const hidden = new Set(s.hidden ?? [])
+      if (on) hidden.add(key)
+      else hidden.delete(key)
+      updateSettings({ autoTag: { ...s, hidden: [...hidden] } })
+      // A listed name is also taken off your lists; either way everything is re-scanned.
+      if (on && category && category !== 'topic' && category !== 'event')
+        await vault().removeRegistryEntry(category as RegCategory, name)
+      else await vault().reindexAll()
+      return null
+    },
+    'notes:delete': async ({ path }) => {
+      await vault().deleteNote(path, (abs) => shell.trashItem(abs))
+      return null
+    },
     'notes:list': () => vault().listNotes(),
     'notes:search': ({ query }) => searchNotePaths(ctx.db, query),
     'app:diagnostics': () => {
@@ -505,10 +523,23 @@ export function registerIpc(ctx: Ctx): void {
       ctx.gmail.touch()
       return null
     },
-    'gmail:overview': () => overview(ctx.db, getSettings().gmailLabels),
+    'gmail:overview': () => smartOverview(ctx.db, ctx.getVault(), getSettings()),
     'gmail:labels': () => listLabels(ctx.db, getSettings().gmailLabels),
     'gmail:set-label': ({ name, handler }) => {
       updateSettings({ gmailLabels: { ...getSettings().gmailLabels, [name]: handler } })
+      ctx.gmail.touch()
+      return null
+    },
+    'gmail:importance': ({ id, verdict }) => {
+      const t = getThread(ctx.db, id)
+      if (!t?.senderEmail) return { sender: null, quieted: false }
+      const weight = adjustSender(ctx.db, t.senderEmail, verdict === 'important' ? 3 : -3)
+      ctx.gmail.touch()
+      return { sender: t.senderEmail, quieted: weight <= -6 }
+    },
+    'gmail:importance-undo': ({ id, verdict }) => {
+      const t = getThread(ctx.db, id)
+      if (t?.senderEmail) adjustSender(ctx.db, t.senderEmail, verdict === 'important' ? -3 : 3)
       ctx.gmail.touch()
       return null
     },

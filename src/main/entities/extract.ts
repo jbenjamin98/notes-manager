@@ -131,5 +131,6 @@ export function extractEntities(input: ExtractInput, m: Matcher): ExtractedEntit
     if (tag) add('topic', tag, 1, false)
   }
 
-  return [...out.values()]
+  const hidden = m.hidden
+  return [...out.values()].filter((e) => !hidden?.has(e.name.toLowerCase()))
 }

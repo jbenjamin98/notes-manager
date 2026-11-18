@@ -8,9 +8,9 @@ import type {
   TaskItem,
   UpcomingEvent
 } from '@shared/contract'
-import { countFilters, type TaskFilter } from '../tasks'
+import { countFilters } from '../tasks'
 import { noteBucket, relativeTime, shortDate, todayIso } from '../format'
-import { useGoogleConnection, useNow, useWaiting } from '../hooks'
+import { useGoogleConnection, useNow } from '../hooks'
 import {
   BellIcon,
   SparkleIcon,
@@ -53,8 +53,11 @@ interface Props {
   onChat: () => void
   chatCount: number
   tasks: TaskItem[]
-  taskFilter: TaskFilter | null
-  onTaskFilter: (f: TaskFilter) => void
+  navView: NavView | null
+  onDashboard: () => void
+  onTasksPage: () => void
+  onActions: () => void
+  onFacts: () => void
   upcoming: UpcomingEvent[]
   cal: CalendarStatus
   selected: string | null
@@ -298,93 +301,58 @@ function Explore({
   )
 }
 
+export type NavView = 'dashboard' | 'tasks' | 'actions' | 'facts' | 'calendar'
+
+/** The four places in the Tasks tab: the dashboard, the full task list, the Action Center and the calendar. */
 function TaskLists({
   tasks,
-  active,
-  onPick,
-  emailActive,
-  emailCount,
-  onEmail,
-  chatActive,
-  onChat,
-  chatCount,
-  onCalendar,
-  calendarActive,
-  onRollup,
-  rollupActive,
-  onSeries,
-  seriesActive
+  navView,
+  actionCount,
+  onDashboard,
+  onTasksPage,
+  onActions,
+  onFacts,
+  onCalendar
 }: {
   tasks: TaskItem[]
-  active: TaskFilter | null
-  onPick: (f: TaskFilter) => void
-  emailActive: boolean
-  emailCount: number
-  onEmail: () => void
-  chatActive: boolean
-  onChat: () => void
-  chatCount: number
+  navView: NavView | null
+  actionCount: number
+  onDashboard: () => void
+  onTasksPage: () => void
+  onActions: () => void
+  onFacts: () => void
   onCalendar: () => void
-  calendarActive: boolean
-  onRollup: () => void
-  rollupActive: boolean
-  onSeries: () => void
-  seriesActive: boolean
 }): React.JSX.Element {
   const today = todayIso()
   const c = countFilters(tasks, today)
-  const waitingCount = useWaiting().items.length
-  const item = (f: TaskFilter, label: string, count?: number, tone = ''): React.JSX.Element => (
-    <Row key={f} active={active === f} onClick={() => onPick(f)}>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {count !== undefined && count > 0 && (
-        <span
-          className={`rounded-full bg-hover px-1.5 text-xs tabular-nums ${tone || 'text-muted'}`}
-        >
-          {count}
-        </span>
-      )}
-    </Row>
-  )
+  const badge = (n: number, tone = 'bg-accent-soft text-accent'): React.JSX.Element | null =>
+    n > 0 ? <span className={`rounded-full px-1.5 text-xs tabular-nums ${tone}`}>{n}</span> : null
   return (
-    <div className="pt-2">
-      {item('mine', 'My Tasks', c.mine)}
-      {item('today', 'Due Today', c.today)}
-      {item('overdue', 'Overdue', c.overdue, 'text-danger')}
-      {item('waiting', 'Waiting On', c.waiting + waitingCount)}
-      {item('done', 'Completed')}
-      <Heading>Catch Up</Heading>
-      <Row active={emailActive} onClick={onEmail}>
-        <span className="min-w-0 flex-1 truncate">Email Follow-Ups</span>
-        {emailCount > 0 && (
-          <span className="rounded-full bg-accent-soft px-1.5 text-xs tabular-nums text-accent">
-            {emailCount}
-          </span>
-        )}
+    <div className="space-y-0.5 pt-2" role="navigation" aria-label="Tasks">
+      <Row active={navView === 'dashboard'} onClick={onDashboard}>
+        <CategoryIcon kind="weeks" size={16} />
+        <span className="min-w-0 flex-1 truncate">Dashboard</span>
       </Row>
-      <Row active={chatActive} onClick={onChat}>
-        <span className="min-w-0 flex-1 truncate">Inbox</span>
-        {chatCount > 0 && (
-          <span className="rounded-full bg-accent-soft px-1.5 text-xs tabular-nums text-accent">
-            {chatCount}
-          </span>
-        )}
+      <Row active={navView === 'tasks'} onClick={onTasksPage}>
+        <CategoryIcon kind="tasks" size={16} />
+        <span className="min-w-0 flex-1 truncate">Tasks</span>
+        {badge(c.mine, 'bg-hover text-muted')}
       </Row>
-      <Row active={calendarActive} onClick={onCalendar}>
+      <Row active={navView === 'actions'} onClick={onActions}>
+        <CategoryIcon kind="inbox" size={16} />
+        <span className="min-w-0 flex-1 truncate">Action Center</span>
+        <span data-testid="action-badge" className="contents">
+          {badge(actionCount)}
+        </span>
+      </Row>
+      <Row active={navView === 'facts'} onClick={onFacts}>
+        <CategoryIcon kind="review" size={16} />
+        <span className="min-w-0 flex-1 truncate">Decisions &amp; Facts</span>
+      </Row>
+      <Row active={navView === 'calendar'} onClick={onCalendar}>
+        <CategoryIcon kind="calendar" size={16} />
         <span className="min-w-0 flex-1 truncate">Calendar</span>
       </Row>
-      <Row active={seriesActive} onClick={onSeries}>
-        <span className="min-w-0 flex-1 truncate">Meeting Series</span>
-      </Row>
-      <Row active={rollupActive} onClick={onRollup}>
-        <span className="min-w-0 flex-1 truncate">Weekly Review</span>
-      </Row>
-      {c.accounts.length > 0 && (
-        <>
-          <Heading>Accounts</Heading>
-          {c.accounts.map(([name, n]) => item(`account:${name}` as TaskFilter, name, n))}
-        </>
-      )}
     </div>
   )
 }
@@ -482,20 +450,13 @@ export default function Sidebar(props: Props): React.JSX.Element {
         ) : tab === 'tasks' ? (
           <TaskLists
             tasks={props.tasks}
-            active={props.taskFilter}
-            onPick={props.onTaskFilter}
-            emailActive={props.emailActive}
-            emailCount={props.mailAttention}
-            onEmail={props.onEmail}
-            chatActive={props.chatActive}
-            onChat={props.onChat}
+            navView={props.navView}
+            actionCount={props.mailAttention + props.chatCount}
+            onDashboard={props.onDashboard}
+            onTasksPage={props.onTasksPage}
+            onActions={props.onActions}
+            onFacts={props.onFacts}
             onCalendar={props.onCalendar}
-            calendarActive={props.calendarActive}
-            onRollup={props.onRollup}
-            onSeries={props.onSeries}
-            seriesActive={props.seriesActive}
-            rollupActive={props.rollupActive}
-            chatCount={props.chatCount}
           />
         ) : (
           <Explore

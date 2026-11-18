@@ -67,7 +67,7 @@ export default function CalendarView({
     return () => ro.disconnect()
   }, [])
   const narrow = width < 520
-  const medium = width < 760
+  const medium = width < 900
   const view: Mode = narrow
     ? mode === 'agenda'
       ? 'agenda'

@@ -181,7 +181,7 @@ describe('Apps Script bridge (the real Code.gs)', () => {
   it('ping reports version, contract and who it runs as', () => {
     expect(load()({ action: 'ping', token: TOKEN })).toMatchObject({
       ok: true,
-      version: 5,
+      version: 7,
       contract: 1,
       email: 'Me@Example.com'
     })
@@ -409,7 +409,7 @@ describe('Apps Script bridge (the real Code.gs)', () => {
     expect(r.sections.calendar).toMatchObject({ ok: false, error: 'Calendar is off' })
     expect(r.sections.mail.ok).toBe(true)
     expect(r.sections.chat.ok).toBe(true)
-    expect(r.version).toBe(5)
+    expect(r.version).toBe(7)
   })
 
   it('selfTest runs each section briefly', () => {

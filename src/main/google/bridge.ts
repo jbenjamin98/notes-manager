@@ -94,7 +94,16 @@ const MailData = z.object({
       lastMs: z.number(),
       unread: z.boolean(),
       starred: z.boolean(),
-      labels: z.array(z.string())
+      labels: z.array(z.string()),
+      signals: z
+        .object({
+          toMe: z.boolean().optional(),
+          ccMe: z.boolean().optional(),
+          bulk: z.boolean().optional(),
+          important: z.boolean().optional(),
+          msgCount: z.number().optional()
+        })
+        .optional()
     })
   ),
   nextPageToken: z.string().nullable(),
@@ -405,7 +414,8 @@ export class BridgeClient {
           timeTitle: gmailTimeTitle(r.lastMs, this.deps.tz()),
           unread: r.unread,
           starred: r.starred,
-          labels: r.labels
+          labels: r.labels,
+          signals: r.signals
         })
       page = opts.sinceHistoryId ? null : d.nextPageToken
     } while (page && pages < cap)

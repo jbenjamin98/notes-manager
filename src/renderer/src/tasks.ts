@@ -120,3 +120,43 @@ export function followUpText(t: TaskItem, today: string): string {
     : ''
   return `Hi ${t.owner}, quick follow-up on "${t.description}" (from ${t.noteTitle}, raised ${age}).${due} Do you have an update?`
 }
+
+export type TaskSort = 'due' | 'priority' | 'newest' | 'note'
+
+export const SORT_LABEL: Record<TaskSort, string> = {
+  due: 'Due date',
+  priority: 'Priority',
+  newest: 'Newest',
+  note: 'Note'
+}
+
+/** Tasks whose text, note, owner, account or tagged names contain every word typed. */
+export function searchTasks(tasks: TaskItem[], query: string): TaskItem[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return tasks
+  return tasks.filter((t) => {
+    const hay =
+      `${t.description} ${t.noteTitle} ${t.owner} ${t.account ?? ''} ${(t.entities ?? []).map((e) => e.name).join(' ')}`.toLowerCase()
+    return words.every((w) => hay.includes(w))
+  })
+}
+
+const PRIORITY_RANK: Record<string, number> = { High: 0, Medium: 1, Low: 2 }
+
+/** A flat order for the list: by priority, newest first, or by note. "due" keeps the grouped view. */
+export function sortTasks(tasks: TaskItem[], sort: TaskSort): TaskItem[] {
+  if (sort === 'due') return tasks
+  const by = [...tasks]
+  if (sort === 'priority')
+    by.sort(
+      (a, b) =>
+        (PRIORITY_RANK[a.priority ?? ''] ?? 3) - (PRIORITY_RANK[b.priority ?? ''] ?? 3) ||
+        (a.due ?? '9999').localeCompare(b.due ?? '9999')
+    )
+  else if (sort === 'newest') by.sort((a, b) => b.since.localeCompare(a.since))
+  else
+    by.sort(
+      (a, b) => a.noteTitle.localeCompare(b.noteTitle) || a.description.localeCompare(b.description)
+    )
+  return by
+}

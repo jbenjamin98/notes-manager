@@ -1,3 +1,4 @@
+import { assistantHints } from '../assistant/hints'
 import { type Output } from '../../shared/contract'
 import { getSettings, updateSettings } from '../services/settings'
 import { z } from 'zod'
@@ -36,6 +37,7 @@ export function aiHandlers(
   Handlers,
   | 'assistant:send'
   | 'assistant:history'
+  | 'assistant:hints'
   | 'assistant:unread'
   | 'assistant:mark-read'
   | 'assistant:action'
@@ -52,6 +54,7 @@ export function aiHandlers(
   return {
     'assistant:send': ({ text, mode, quiet }) => ctx.assistant.send(text, mode ?? 'auto', quiet),
     'assistant:history': () => ctx.assistant.history(),
+    'assistant:hints': () => assistantHints(ctx.db),
     'assistant:unread': () => ctx.assistant.unread(),
     'assistant:mark-read': () => {
       ctx.assistant.markRead()

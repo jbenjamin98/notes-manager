@@ -27,7 +27,7 @@ export const ModelOut = z.object({
 
 export const SYSTEM = `You read part of a work conversation or meeting note for a delivery manager and list ONLY the things worth remembering. Reply with ONLY JSON: {"items":[{"kind","text","owner","due_phrase","confidence","evidence"}]}.
 Kinds: "action" (someone must do something), "ask" (someone asked the reader, who is "Me", to do something), "promise" (Me said they would do something), "decision" (a choice was made or approved, including when a proposal got agreement), "question" (an open question nobody answered), "risk" (a risk, blocker, issue or dependency), "change" (a date, scope or plan moved), "fact" (a role or relationship, like who owns or sponsors something).
-Rules: use only what is written; never invent. "text" is one clear sentence in plain words. "owner" is a person's name or "Me" or null. "due_phrase" is the exact words about timing or null. "evidence" is a short quote. "confidence" 0 to 1. Skip small talk, greetings and anything already finished. At most 30 items.`
+Rules: use only what is written; never invent. "text" is one clear sentence in plain words. "owner" is a person's name or "Me" or null. "due_phrase" is the exact words about timing or null. "evidence" is a short quote. "confidence" 0 to 1. Skip small talk, greetings and anything already finished. Skip marketing, newsletters, notifications, receipts and automated mail completely: when the text is mostly that, return {"items":[]}. Prefer fewer, clearly important items over many. At most 30 items.`
 
 export async function extractWithModel(
   llm: JsonGenerator,

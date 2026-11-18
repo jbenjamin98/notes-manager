@@ -2,6 +2,8 @@ import type { Db } from '../db'
 import { loadDetail } from '../calendar/detail'
 import { listWaiting } from '../waiting/waiting'
 import { isPersonThread } from '../gmail/relevance'
+import { worthwhileThreadIds } from '../gmail/sync'
+import { mailExtra } from '../gmail/extra'
 import { listInsights } from '../insights/store'
 import type { Vault } from '../vault/vault'
 import { buildDossier } from '../prep/dossier'
@@ -208,15 +210,23 @@ export function makeSources(deps: {
               )
               .join('\n')
         )
+      const worthy = worthwhileThreadIds(db, {}, mailExtra(v, { meAliases: [] }))
       const replies = (
         db
           .prepare(
-            `SELECT subject, sender_name AS n, sender_email AS e, last_message_at AS at FROM email_threads
+            `SELECT id, subject, sender_name AS n, sender_email AS e, last_message_at AS at FROM email_threads
               WHERE in_inbox = 1 AND last_sender_is_me = 0 ORDER BY last_message_at DESC LIMIT 40`
           )
-          .all() as { subject: string; n: string | null; e: string | null; at: string | null }[]
+          .all() as {
+          id: string
+          subject: string
+          n: string | null
+          e: string | null
+          at: string | null
+        }[]
       )
         .filter((r) => isPersonThread({ senderEmail: r.e, senderName: r.n, subject: r.subject }))
+        .filter((r) => worthy.has(r.id))
         .slice(0, 6)
       if (replies.length)
         L.push(

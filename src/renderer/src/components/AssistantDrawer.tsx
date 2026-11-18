@@ -301,10 +301,11 @@ const KIND_LABEL: Record<ChatMessage['kind'], string> = {
   nudge: 'Heads-up'
 }
 
-const HINTS = [
-  'What did we decide about the cutover?',
-  'Remind Sarah to send the deck by Friday',
-  'Met with the Navy team. Cutover moves to Dec 4. Sarah owns the firewall rules.'
+// Shown until the real ones (from your own notes) arrive.
+const PLAIN_HINTS = [
+  "What's on my plate this week?",
+  'Summarize my most recent meeting',
+  'What did I decide recently?'
 ]
 
 export default function AssistantDrawer({
@@ -328,6 +329,7 @@ export default function AssistantDrawer({
   context?: { path: string; title: string } | null
 }): React.JSX.Element {
   const [msgs, setMsgs] = useState<ChatMessage[]>([])
+  const [hints, setHints] = useState<string[]>(PLAIN_HINTS)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [busyCard, setBusyCard] = useState<string | null>(null)
@@ -406,6 +408,7 @@ export default function AssistantDrawer({
         void window.api.invoke('assistant:mark-read')
       })
     })
+    void window.api.invoke('assistant:hints').then((r) => r.ok && setHints(r.data))
     loadStatus()
     input.current?.focus()
     return off
@@ -592,7 +595,7 @@ export default function AssistantDrawer({
                 your notes, calendar, mail and chat, and offer to turn to-dos into tasks for you to
                 review.
               </p>
-              {HINTS.map((h) => (
+              {hints.map((h) => (
                 <button
                   key={h}
                   className="block w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 text-left text-xs hover:bg-hover"

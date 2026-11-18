@@ -30,7 +30,8 @@ import { scheduleSelfTest } from './google/health'
 import { insightsFromChat, insightsFromMeeting, type PipelineDeps } from './insights/pipeline'
 import { insightsFromMail } from './insights/mail'
 import type { MeetingRead } from './google/meet'
-import { GmailSync, guessEmail, overview as mailOverview } from './gmail/sync'
+import { GmailSync, guessEmail } from './gmail/sync'
+import { smartOverview } from './gmail/extra'
 import { NudgeEngine, type Nudge } from './nudges/engine'
 import { LlmRouter } from './llm/router'
 import { routerConfig } from './llm/config'
@@ -70,7 +71,8 @@ async function startVault(root: string): Promise<void> {
     db,
     root,
     () => getSettings().meAliases,
-    (paths) => mainWindow?.webContents.send('vault:changed', { paths })
+    (paths) => mainWindow?.webContents.send('vault:changed', { paths }),
+    () => getSettings().autoTag.hidden ?? []
   )
   await vault.init()
   mainWindow?.webContents.send('vault:changed', { paths: [] })
@@ -272,7 +274,7 @@ if (!app.requestSingleInstanceLock()) {
     engine = new NudgeEngine(db, {
       getSettings: () => getSettings(),
       getTasks: () => vault?.listTasks() ?? [],
-      getMail: () => (db ? mailOverview(db, getSettings().gmailLabels) : null),
+      getMail: () => (db ? smartOverview(db, vault, getSettings()) : null),
       onNew: deliverToasts,
       onChanged: () => send('nudges:changed', { unread: engine?.unread() ?? 0 })
     })
@@ -453,7 +455,7 @@ if (!app.requestSingleInstanceLock()) {
         persona: () => getSettings().assistant.persona,
         tasks: () => vault?.listTasks() ?? [],
         awaiting: () =>
-          (db ? mailOverview(db, getSettings().gmailLabels).awaitingMe : []).map((t) => ({
+          (db ? smartOverview(db, vault, getSettings()).awaitingMe : []).map((t) => ({
             id: t.id,
             subject: t.subject,
             sender: t.senderName ?? t.senderEmail ?? '',

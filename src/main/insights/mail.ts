@@ -2,6 +2,7 @@ import type { Db } from '../db'
 import type { MailBody } from '../google/mailBody'
 import { cleanEmail } from './clean'
 import { readSource, type PipelineDeps } from './pipeline'
+import { worthwhileThreadIds } from '../gmail/sync'
 import { alreadyRead, markRead } from './store'
 import type { Utterance } from './types'
 
@@ -19,7 +20,7 @@ export interface MailCandidate {
  * Which threads are worth reading in full: recent, written by a person, and either unread, starred
  * or waiting on me. Bounded per run, and a thread is only read again when a new message arrives.
  */
-export function mailCandidates(db: Db, limit = 25): MailCandidate[] {
+export function mailCandidates(db: Db, limit = 25, allow?: Set<string>): MailCandidate[] {
   const rows = db
     .prepare(
       `SELECT id, subject, sender_email AS email, last_message_at AS lastAt, last_sender_is_me AS mine, unread, starred
@@ -39,6 +40,8 @@ export function mailCandidates(db: Db, limit = 25): MailCandidate[] {
   const out: MailCandidate[] = []
   for (const r of rows) {
     if (!r.lastAt || (r.email && AUTOMATED.test(r.email))) continue
+    // Muted, dismissed, bulk and unimportant mail is never read by the model.
+    if (allow && !allow.has(r.id)) continue
     if (!(r.unread || r.starred || !r.mine)) continue
     if (alreadyRead(db, `emailseen:${r.id}`, r.lastAt)) continue
     out.push({ id: r.id, subject: r.subject, lastAt: r.lastAt })
@@ -59,7 +62,11 @@ export async function insightsFromMail(
   fetchBodies: (ids: string[]) => Promise<MailBody[]>,
   selfEmail: string | null
 ): Promise<number> {
-  const cands = mailCandidates(deps.db)
+  const cands = mailCandidates(
+    deps.db,
+    25,
+    worthwhileThreadIds(deps.db, {}, { meAliases: deps.me() })
+  )
   if (cands.length === 0) return 0
   const threads = await fetchBodies(cands.map((c) => c.id))
   const byId = new Map(cands.map((c) => [c.id, c]))

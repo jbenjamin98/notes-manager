@@ -393,7 +393,7 @@ export default function CaptureWindow(): React.JSX.Element {
                 onMouseDown={noFocusLoss}
                 onClick={() => setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}@`)}
               >
-                @ Assign
+                @ About
               </button>
               <button
                 className={`${tool} cap-chip ${curDue ? 'cap-on' : ''}`}

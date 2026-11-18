@@ -18,6 +18,16 @@ export interface RawRow {
   starred: boolean
   /** Label chip names on the row (system "Inbox" included). */
   labels: string[]
+  /** Facts read from the message headers (absent from older scripts). */
+  signals?: RowSignals
+}
+
+export interface RowSignals {
+  toMe?: boolean
+  ccMe?: boolean
+  bulk?: boolean
+  important?: boolean
+  msgCount?: number
 }
 
 export interface ThreadRecord {
@@ -36,6 +46,12 @@ export interface ThreadRecord {
   inInbox: boolean
   /** Any message in the thread is from me. */
   iParticipated: boolean
+  /** Header-based facts; null when the source did not say. */
+  toMe: boolean | null
+  ccMe: boolean | null
+  bulk: boolean | null
+  importantLabel: boolean | null
+  msgCount: number | null
 }
 
 /** Built-in Gmail labels: never offered as user labels. */
@@ -118,7 +134,12 @@ export function normalizeRows(rows: RawRow[], selfEmail: string | null): ThreadR
       starred: r.starred,
       labels: uniqueLabels(r.labels),
       inInbox: r.labels.some((l) => l.trim().toLowerCase() === 'inbox'),
-      iParticipated: r.senders.some(isMe)
+      iParticipated: r.senders.some(isMe),
+      toMe: r.signals?.toMe ?? null,
+      ccMe: r.signals?.ccMe ?? null,
+      bulk: r.signals?.bulk ?? null,
+      importantLabel: r.signals?.important ?? null,
+      msgCount: r.signals?.msgCount ?? null
     })
   }
   return out

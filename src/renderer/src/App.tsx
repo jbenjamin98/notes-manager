@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { navReset, navRestore, navSnapshot, subscribeNav } from './nav'
 import { ArrowLeftIcon } from './components/Icons'
-import { filterTitle } from './tasks'
 import Sidebar, { type Tab } from './components/Sidebar'
 import NoteView from './components/NoteView'
 import Settings from './components/Settings'
+import TasksDashboard from './components/TasksDashboard'
 import TasksView from './components/TasksView'
+import ActionsPage from './components/ActionsPage'
+import FactsPage from './components/FactsPage'
 import EntityView from './components/EntityView'
 import InsightsView from './components/InsightsView'
 import EmailView from './components/EmailView'
@@ -45,6 +47,9 @@ const readTab = (): Tab => {
 const PLACE: Record<string, string> = {
   note: 'Home',
   tasks: 'Tasks',
+  dashboard: 'Dashboard',
+  actions: 'Action Center',
+  facts: 'Decisions & Facts',
   entity: 'Profile',
   insights: 'Word Map',
   email: 'Email Follow-Ups',
@@ -75,13 +80,15 @@ function placeName(l: {
         .replace(/-/g, ' ') || 'Note'
     )
   }
-  if (l.view === 'tasks') return filterTitle(l.taskFilter as never)
   return PLACE[l.view] ?? 'Previous'
 }
 
 type ViewName =
   | 'note'
   | 'tasks'
+  | 'dashboard'
+  | 'actions'
+  | 'facts'
   | 'entity'
   | 'insights'
   | 'email'
@@ -102,6 +109,9 @@ function tabForView(v: ViewName, hasNote: boolean): Tab | null {
     case 'library':
       return 'notes'
     case 'tasks':
+    case 'dashboard':
+    case 'actions':
+    case 'facts':
     case 'email':
     case 'chat':
     case 'calendar':
@@ -207,7 +217,7 @@ function App(): React.JSX.Element {
   const setTab = (t: Tab): void => {
     setTabState(t)
     if (t === 'tasks') {
-      setView('tasks')
+      setView('dashboard')
       setSettingsOpen(false)
     } else if (t === 'notes') {
       setView('library')
@@ -285,6 +295,34 @@ function App(): React.JSX.Element {
       return null
     },
     [flash, openEntity]
+  )
+
+  const deleteNote = useCallback(
+    async (path: string) => {
+      const r = await window.api.invoke('notes:delete', { path })
+      if (!r.ok) return flash(r.error.message)
+      setSelected(null)
+      setView('note')
+      await refreshNotes()
+      flash('Note moved to the Recycle Bin.')
+    },
+    [flash, refreshNotes]
+  )
+
+  const hideEntity = useCallback(
+    async (d: Dossier) => {
+      const r = await window.api.invoke('entities:hide', {
+        name: d.name,
+        category: d.category,
+        on: true
+      })
+      if (!r.ok) return flash(r.error.message)
+      flash(`Deleted ${d.name}. Your notes are unchanged.`, () => {
+        void window.api.invoke('entities:hide', { name: d.name, category: d.category, on: false })
+      })
+      openInsights()
+    },
+    [flash, openInsights]
   )
 
   const removeEntity = useCallback(
@@ -375,6 +413,23 @@ function App(): React.JSX.Element {
 
   const [prepEventId, setPrepEventId] = useState<string | null>(null)
   const [backTo, setBackTo] = useState<typeof view>('calendar')
+
+  const openDashboard = useCallback(() => {
+    setView('dashboard')
+    setSettingsOpen(false)
+  }, [])
+  const openTasksPage = useCallback(() => {
+    setView('tasks')
+    setSettingsOpen(false)
+  }, [])
+  const openFacts = useCallback(() => {
+    setView('facts')
+    setSettingsOpen(false)
+  }, [])
+  const openActions = useCallback(() => {
+    setView('actions')
+    setSettingsOpen(false)
+  }, [])
 
   const openCalendar = useCallback(() => {
     setView('calendar')
@@ -766,8 +821,19 @@ function App(): React.JSX.Element {
           onInsights={openInsights}
           onAddEntity={() => setEditor({ category: 'person', name: '', aliases: [] })}
           tasks={tasks}
-          taskFilter={view === 'tasks' && !settingsOpen ? taskFilter : null}
-          onTaskFilter={pickFilter}
+          navView={
+            settingsOpen
+              ? null
+              : view === 'dashboard' || view === 'tasks' || view === 'actions' || view === 'facts'
+                ? view
+                : view === 'calendar' || view === 'prep'
+                  ? 'calendar'
+                  : null
+          }
+          onDashboard={openDashboard}
+          onTasksPage={openTasksPage}
+          onActions={openActions}
+          onFacts={openFacts}
           upcoming={upcoming}
           cal={cal}
           selected={view === 'note' && !settingsOpen ? selectedPath : null}
@@ -927,6 +993,7 @@ function App(): React.JSX.Element {
               id={entityId}
               onOpenNote={open}
               onEdit={editEntity}
+              onDelete={hideEntity}
               onCatchUp={(id, name) =>
                 runAI({ kind: 'catch-up', entityId: id }, `Catch me up on ${name}`)
               }
@@ -938,14 +1005,31 @@ function App(): React.JSX.Element {
                 setView('manage')
               }}
             />
+          ) : view === 'facts' ? (
+            <FactsPage onFlash={flash} />
+          ) : view === 'actions' ? (
+            <ActionsPage onFlash={flash} onSettings={() => setSettingsOpen(true)} />
           ) : view === 'tasks' ? (
             <TasksView
               tasks={tasks}
               filter={taskFilter}
+              onPickFilter={pickFilter}
               onToggle={toggleTask}
               onOpenNote={open}
               onSetDue={(id, due) => void setDue(id, due)}
               onFlash={flash}
+            />
+          ) : view === 'dashboard' ? (
+            <TasksDashboard
+              tasks={tasks}
+              onViewAll={openTasksPage}
+              onToggle={toggleTask}
+              onOpenNote={open}
+              onSetDue={(id, due) => void setDue(id, due)}
+              onFlash={flash}
+              onOpenPrep={openPrep}
+              onOpenCalendar={openCalendar}
+              onSettings={() => setSettingsOpen(true)}
             />
           ) : selectedPath ? (
             <NoteView
@@ -965,6 +1049,7 @@ function App(): React.JSX.Element {
                       : `Draft a follow-up email for “${current?.title ?? 'this note'}”`
                 )
               }
+              onDelete={() => void deleteNote(selectedPath)}
               onOpenPath={open}
               onOpenEntity={openEntity}
               onRenamed={(p) => {

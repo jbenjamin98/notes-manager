@@ -22,8 +22,8 @@ const add = (
   } = {}
 ): void => {
   db.prepare(
-    `INSERT INTO email_threads (id, link_id, subject, snippet, sender_name, sender_email, last_sender_is_me, last_message_at, unread, starred, in_sent, labels_json)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]')`
+    `INSERT INTO email_threads (id, link_id, subject, snippet, sender_name, sender_email, last_sender_is_me, last_message_at, unread, starred, in_sent, in_inbox, labels_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,1,'[]')`
   ).run(
     id,
     id,

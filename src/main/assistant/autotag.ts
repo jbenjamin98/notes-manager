@@ -39,6 +39,7 @@ export interface TagDeps {
       ignore: string[]
       kinds?: Record<string, string>
       topics?: string[]
+      hidden?: string[]
     }
   }
   now?: () => number
@@ -102,7 +103,8 @@ export class AutoTagger {
   }
 
   private ignore(): Set<string> {
-    return new Set(this.deps.settings().autoTag.ignore.map((w) => w.toLowerCase()))
+    const t = this.deps.settings().autoTag
+    return new Set([...t.ignore, ...(t.hidden ?? [])].map((w) => w.toLowerCase()))
   }
 
   /** Model calls made today and the daily limit (shown in Settings). */

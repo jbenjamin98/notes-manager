@@ -405,5 +405,27 @@ CREATE TABLE tag_events (
 );
 CREATE INDEX idx_tag_events_word ON tag_events(word);
 `
+  },
+  {
+    version: 13,
+    name: 'email-importance',
+    sql: `
+-- Facts read from message headers, to tell mail for you from bulk and copies.
+ALTER TABLE email_threads ADD COLUMN to_me INTEGER;
+ALTER TABLE email_threads ADD COLUMN cc_me INTEGER;
+ALTER TABLE email_threads ADD COLUMN bulk INTEGER;
+ALTER TABLE email_threads ADD COLUMN important_label INTEGER;
+ALTER TABLE email_threads ADD COLUMN msg_count INTEGER;
+-- When a thread was dismissed: it comes back if someone writes again afterwards.
+ALTER TABLE email_actions ADD COLUMN at TEXT;
+-- What you taught it: Important / Not important per sender address and "@domain".
+CREATE TABLE sender_weights (
+  key TEXT PRIMARY KEY,
+  weight REAL NOT NULL DEFAULT 0,
+  important_n INTEGER NOT NULL DEFAULT 0,
+  not_n INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
   }
 ]

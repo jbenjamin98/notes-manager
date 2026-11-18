@@ -747,3 +747,17 @@ describe("automatic messages are written in the persona's voice", () => {
     }
   })
 })
+
+describe('Co-Pilot example prompts', () => {
+  it('are general questions, using your own people and topics when there are some', async () => {
+    const { buildHints } = await import('./hints')
+    expect(buildHints('Priya Shah', 'Atlas')).toEqual([
+      "What's on my plate this week?",
+      "What's the latest on Atlas?",
+      'What did I last talk about with Priya Shah?'
+    ])
+    const plain = buildHints(null, null)
+    expect(plain).toHaveLength(3)
+    expect(plain.join(' ')).not.toMatch(/Sarah|Navy|cutover|Friday/i)
+  })
+})
