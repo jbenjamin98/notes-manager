@@ -171,6 +171,16 @@ describe('new names of other kinds, without a model', () => {
     expect(kinds('Tell Rhea about it')).toEqual([['Rhea', 'person']])
     expect(kinds('Call with Globex Corp')).toEqual([['Globex Corp', 'customer']])
   })
+  it('reads "X is pursuing Y" as a company going after a project, even at the start of a line', () => {
+    expect(kinds('KPMG is pursuing RMW')).toEqual([
+      ['KPMG', 'customer'],
+      ['RMW', 'project']
+    ])
+    expect(kinds('Next is pursuing the plan')).toEqual([])
+  })
+  it('asks the model about an all-caps name at the start of a line', () => {
+    expect(needsModel('KPMG wants the numbers', v, [])).toBe(true)
+  })
   it('does not take sentence starts or everyday words for names', () => {
     expect(kinds('Next release is in review')).toEqual([])
     expect(kinds('McDonald said hello')).toEqual([])

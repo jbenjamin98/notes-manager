@@ -19,6 +19,13 @@ interface Stale {
 const AUTOSAVE_MS = 800
 const PLACEHOLDER_TITLE = 'Untitled'
 
+/** True when a note has no body: nothing but frontmatter, a heading and whitespace. */
+const isBlank = (text: string): boolean =>
+  text
+    .replace(/^---\r?\n[\s\S]*?\r?\n---/, '')
+    .replace(/^\s*#\s.*$/m, '')
+    .trim() === ''
+
 const NO_FORMAT: FormatInfo = {
   heading: 0,
   list: null,
@@ -116,6 +123,8 @@ export default function NoteView({
   const tagging = useRef<{ entries: VocabEntry[]; settings: TagSettings } | null>(null)
   const [vocabList, setVocabList] = useState<VocabEntry[]>([])
   const [fmt, setFmt] = useState<FormatInfo>(NO_FORMAT)
+  /** Only a title so far: the page shrinks and offers ways to start. */
+  const [blank, setBlank] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [stale, setStale] = useState<Stale | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -215,6 +224,7 @@ export default function NoteView({
       if (!r.ok) return setError(r.error.message)
       baseHash.current = r.data.hash
       setInitial(r.data.content)
+      setBlank(isBlank(r.data.content))
       setDocKey(`${path}:${r.data.hash}`)
       void loadTasks()
       void loadTags()
@@ -281,6 +291,7 @@ export default function NoteView({
   }, [path, loadTasks])
 
   const onChange = useCallback(() => {
+    setBlank(isBlank(handle.current?.getText() ?? ''))
     dirty.current = true
     setSaveState('dirty')
     if (timer.current) clearTimeout(timer.current)
@@ -539,8 +550,13 @@ export default function NoteView({
         <EditorToolbar info={fmt} vocab={vocabList} run={(c) => handle.current?.exec(c)} />
       )}
       {/* The page: a lighter canvas so it is clear where you can write. */}
-      <div className="min-h-0 flex-1 px-6 pb-5">
-        <div className="canvas canvas-edit mx-auto h-full max-w-3xl overflow-hidden rounded-2xl border">
+      <div className={`min-h-0 px-6 pb-5 ${blank ? '' : 'flex-1'}`}>
+        <div
+          className={`canvas canvas-edit mx-auto max-w-3xl overflow-hidden rounded-2xl border ${blank ? 'h-56' : 'h-full'}`}
+          onClick={(e) => {
+            if (blank && e.target === e.currentTarget) handle.current?.focus()
+          }}
+        >
           {initial !== null && (
             <Editor
               mode={mode}
@@ -556,6 +572,35 @@ export default function NoteView({
             />
           )}
         </div>
+        {blank && initial !== null && (
+          <div
+            className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-2 text-xs text-muted"
+            data-testid="note-starters"
+          >
+            <span>Start with</span>
+            {(
+              [
+                ['Add a task', '- [ ] '],
+                ['Tag a person or company', '@']
+              ] as const
+            ).map(([label, insert]) => (
+              <button
+                key={label}
+                className="rounded-full border border-line bg-field px-2.5 py-1 hover:bg-hover hover:text-fg"
+                onClick={() => {
+                  const h = handle.current
+                  if (!h) return
+                  const t = h.getText()
+                  h.setText(t.endsWith('\n') || t === '' ? t + insert : t + '\n' + insert)
+                  h.focus()
+                  onChange()
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

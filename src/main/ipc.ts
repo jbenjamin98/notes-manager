@@ -99,7 +99,11 @@ export function registerIpc(ctx: Ctx): void {
         .replace(/^#+\s*/, '')
         .trim()
         .slice(0, 120) || 'Quick note'
-    const body = await ctx.tagger.tagOnSubmit(lines.slice(1).join('\n').trim(), { fast: true })
+    // A one-line note keeps the plain line as its title and is tagged in the body, so it is never
+    // a title-only page with nothing tagged.
+    const rest =
+      lines.length > 1 ? lines.slice(1).join('\n').trim() : lines[0].replace(/^#+\s*/, '').trim()
+    const body = await ctx.tagger.tagOnSubmit(rest, { fast: true })
     const v = vault()
     const path = await v.createNote({ kind: 'adhoc', title, date: localDate() })
     if (body) {

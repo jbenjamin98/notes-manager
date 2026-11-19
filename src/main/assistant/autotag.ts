@@ -63,7 +63,7 @@ const SYSTEM = [
   'Return ONLY JSON: {"tags":[{"text": the exact words from the line, "kind": "topic"|"person"|"customer"|"project"|"system"|"place"}]}.',
   'Lean toward tagging: if a word might be worth a tag, include it. A missed tag costs more than an extra one. Pick at most 4 topics and at most 5 named things.',
   '- A topic is one lowercase-able word that names something the line is about (firewall, budget, cats, onboarding, migration). Skip only vague filler (thing, issue, work, team), verbs, dates, numbers and pronouns.',
-  '- A named thing is a specific person, company, project, system or place that is written in the line with a capital letter (Matt, Acme, Denver, Jira).',
+  '- A named thing is a specific person, company, project, system or place that is written in the line with a capital letter (Matt, Acme, Denver, Jira). All-caps abbreviations count (KPMG is a company, RMW a project), even as the first word.',
   '- Copy each text EXACTLY as written in the line. Never invent words. Skip anything that already starts with @ or #.',
   '- If nothing in the line is worth tagging, return {"tags":[]}.'
 ].join('\n')

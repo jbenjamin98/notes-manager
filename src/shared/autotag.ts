@@ -262,6 +262,19 @@ const KIND_RULES: { kind: NewName['kind']; re: RegExp; mid?: boolean; weak?: boo
     ),
     mid: true
   },
+  // "KPMG is pursuing RMW": who is going after what. The one doing it is a company, the target a project.
+  {
+    kind: 'customer',
+    re: re(
+      `\\b(${CAP}|[\\p{Lu}]{2,8})(?=\\s+(?:is|are|was|were)\\s+(?:${W('pursuing|chasing|bidding on|bidding for|pitching|targeting|courting|evaluating|acquiring|buying|renewing')})\\b)`
+    )
+  },
+  {
+    kind: 'project',
+    re: re(
+      `(?<=\\b(?:${W('pursuing|chasing|bidding on|bidding for|pitching|targeting|courting')})\\s+)(${CAP}|[\\p{Lu}]{2,8})(?![\\p{L}])`
+    )
+  },
   // Places
   {
     kind: 'place',
@@ -395,7 +408,10 @@ export function needsModel(
     const w = m[0]
     const lower = w.toLowerCase()
     if (overlaps(from, from + w.length, skip)) continue
-    if (/(^|[.!?:]\s+|\n\s*(?:[-*]\s+(?:\[.\]\s+)?)?)$/.test(text.slice(0, from))) continue // sentence start
+    // An all-caps acronym (KPMG) is a name even at the start of a sentence.
+    const acronym = /^\p{Lu}{3,6}$/u.test(w)
+    if (!acronym && /(^|[.!?:]\s+|\n\s*(?:[-*]\s+(?:\[.\]\s+)?)?)$/.test(text.slice(0, from)))
+      continue // sentence start
     if (NOT_NAMES.has(lower) || TOPIC_STOP.has(lower) || have.has(lower)) continue
     if (known.byTerm.has(w) || known.byTerm.has(lower)) continue
     capitalised++
